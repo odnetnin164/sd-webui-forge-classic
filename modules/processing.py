@@ -1213,8 +1213,9 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
     hr_additional_modules: list = field(default=None)
     hr_sampler_name: str = None
     hr_scheduler: str = None
-    hr_prompt: str = ""
-    hr_negative_prompt: str = ""
+    hr_prompt: str = ''
+    hr_negative_prompt: str = ''
+    hr_extra_prompt: str = ''
     hr_cfg: float = 1.0
     hr_distilled_cfg: float = 3.5
     force_task_id: str = None
@@ -1315,7 +1316,30 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
                     self.extra_generation_params["Hires Module 1"] = "Use same choices"
                 else:
                     for i, m in enumerate(self.hr_additional_modules):
-                        self.extra_generation_params[f"Hires Module {i+1}"] = os.path.splitext(os.path.basename(m))[0]
+                        self.extra_generation_params[f'Hires Module {i+1}'] = os.path.splitext(os.path.basename(m))[0]
+
+            if self.hr_sampler_name is not None and self.hr_sampler_name != self.sampler_name:
+                self.extra_generation_params["Hires sampler"] = self.hr_sampler_name
+
+            def get_hr_prompt(p, index, prompt_text, **kwargs):
+                hr_prompt = p.all_hr_prompts[index]
+                return hr_prompt if hr_prompt != prompt_text else None
+
+            def get_hr_negative_prompt(p, index, negative_prompt, **kwargs):
+                hr_negative_prompt = p.all_hr_negative_prompts[index]
+                return hr_negative_prompt if hr_negative_prompt != negative_prompt else None
+
+            self.extra_generation_params["Hires prompt"] = get_hr_prompt
+            self.extra_generation_params["Hires negative prompt"] = get_hr_negative_prompt
+
+            # Add hires extra prompt to metadata if it exists
+            if self.hr_extra_prompt:
+                self.extra_generation_params["Hires extra prompt"] = self.hr_extra_prompt
+
+            self.extra_generation_params["Hires CFG Scale"] = self.hr_cfg
+            self.extra_generation_params["Hires Distilled CFG Scale"] = None  # set after potential hires model load
+
+            self.extra_generation_params["Hires schedule type"] = None  # to be set in sd_samplers_kdiffusion.py
 
             if self.hr_scheduler is None:
                 self.hr_scheduler = self.scheduler
@@ -1403,14 +1427,15 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
         fp_additional_modules = getattr(shared.opts, "forge_additional_modules")
 
         reload = False
-        if hasattr(self, "hr_additional_modules") and "Use same choices" not in self.hr_additional_modules:
+        if hasattr(self, 'hr_additional_modules') and 'Use same choices' not in self.hr_additional_modules:
             modules_changed = main_entry.modules_change(self.hr_additional_modules, preset=None, save=False, refresh=False)
             if modules_changed:
                 reload = True
 
-        if self.hr_checkpoint_name and self.hr_checkpoint_name != "Use same checkpoint":
+        if self.hr_checkpoint_name and self.hr_checkpoint_name != 'Use same checkpoint':
             checkpoint_changed = main_entry.checkpoint_change(self.hr_checkpoint_name, preset=None, save=False, refresh=False)
             if checkpoint_changed:
+                self.firstpass_use_distilled_cfg_scale = self.sd_model.use_distilled_cfg_scale
                 reload = True
 
         if reload:
@@ -1421,6 +1446,9 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
                 main_entry.modules_change(fp_additional_modules, preset=None, save=False, refresh=False)
                 main_entry.checkpoint_change(fp_checkpoint, preset=None, save=False, refresh=False)
                 main_entry.refresh_model_loading_parameters()
+
+        if self.sd_model.use_distilled_cfg_scale:
+            self.extra_generation_params['Hires Distilled CFG Scale'] = self.hr_distilled_cfg
 
         return self.sample_hr_pass(samples, decoded_samples, seeds, subseeds, subseed_strength, prompts)
 
@@ -1653,6 +1681,10 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
         if self.enable_hr:
             self.hr_prompts = self.all_hr_prompts[self.iteration * self.batch_size : (self.iteration + 1) * self.batch_size]
             self.hr_negative_prompts = self.all_hr_negative_prompts[self.iteration * self.batch_size : (self.iteration + 1) * self.batch_size]
+
+            # Apply extra prompt after dynamic prompts has processed all_hr_prompts
+            if self.hr_extra_prompt:
+                self.hr_prompts = [prompt + ', ' + self.hr_extra_prompt if prompt else self.hr_extra_prompt for prompt in self.hr_prompts]
 
             self.hr_prompts, self.hr_extra_network_data = extra_networks.parse_prompts(self.hr_prompts)
 

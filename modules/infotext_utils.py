@@ -347,6 +347,12 @@ def _populate_defaults(res: dict):
 
     if "MaHiRo" not in res:
         res["MaHiRo"] = False
+        
+    if "Hires extra prompt" not in res:
+        res["Hires extra prompt"] = ""
+
+    if "Mask mode" not in res:
+        res["Mask mode"] = "Inpaint masked"
 
     if "Rescale CFG" not in res:
         res["Rescale CFG"] = 0.0
