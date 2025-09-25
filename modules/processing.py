@@ -1212,6 +1212,7 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
     hr_scheduler: str = None
     hr_prompt: str = ''
     hr_negative_prompt: str = ''
+    hr_extra_prompt: str = ''
     hr_cfg: float = 1.0
     hr_distilled_cfg: float = 3.5
     force_task_id: str = None
@@ -1319,6 +1320,10 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
 
             self.extra_generation_params["Hires prompt"] = get_hr_prompt
             self.extra_generation_params["Hires negative prompt"] = get_hr_negative_prompt
+
+            # Add hires extra prompt to metadata if it exists
+            if self.hr_extra_prompt:
+                self.extra_generation_params["Hires extra prompt"] = self.hr_extra_prompt
 
             self.extra_generation_params["Hires CFG Scale"] = self.hr_cfg
             self.extra_generation_params["Hires Distilled CFG Scale"] = None  # set after potential hires model load
@@ -1642,6 +1647,10 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
         if self.enable_hr:
             self.hr_prompts = self.all_hr_prompts[self.iteration * self.batch_size:(self.iteration + 1) * self.batch_size]
             self.hr_negative_prompts = self.all_hr_negative_prompts[self.iteration * self.batch_size:(self.iteration + 1) * self.batch_size]
+
+            # Apply extra prompt after dynamic prompts has processed all_hr_prompts
+            if self.hr_extra_prompt:
+                self.hr_prompts = [prompt + ', ' + self.hr_extra_prompt if prompt else self.hr_extra_prompt for prompt in self.hr_prompts]
 
             self.hr_prompts, self.hr_extra_network_data = extra_networks.parse_prompts(self.hr_prompts)
 

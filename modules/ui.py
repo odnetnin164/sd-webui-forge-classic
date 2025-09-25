@@ -321,6 +321,9 @@ def create_ui():
                                     with gr.Column():
                                         hr_negative_prompt = gr.Textbox(label="Hires negative prompt", elem_id="hires_neg_prompt", show_label=False, lines=3, placeholder="Negative prompt for hires fix pass.\nLeave empty to use the same negative prompt as in first pass.", elem_classes=["prompt"])
 
+                                with FormRow(elem_id="txt2img_hires_fix_row5", variant="compact", visible=shared.opts.hires_fix_show_prompts):
+                                    hr_extra_prompt = gr.Textbox(label="Hires extra prompt", elem_id="hires_extra_prompt", show_label=True, lines=2, placeholder="Extra prompt to append to main prompt during hires fix pass.\nLeave empty if no extra prompt needed.", elem_classes=["prompt"])
+                                
                                 hr_cfg.change(lambda x: gr.update(interactive=(x != 1)), inputs=[hr_cfg], outputs=[hr_negative_prompt], queue=False, show_progress=False)
 
                             scripts.scripts_txt2img.setup_ui_for_section(category)
@@ -386,6 +389,7 @@ def create_ui():
                 hr_scheduler,
                 hr_prompt,
                 hr_negative_prompt,
+                hr_extra_prompt,
                 hr_cfg,
                 hr_distilled_cfg,
                 override_settings,
@@ -468,9 +472,10 @@ def create_ui():
                 PasteField(hr_sampler_container, lambda d: gr.update(visible=True) if d.get("Hires sampler", "Use same sampler") != "Use same sampler" or d.get("Hires checkpoint", "Use same checkpoint") != "Use same checkpoint" or d.get("Hires schedule type", "Use same scheduler") != "Use same scheduler" else gr.update()),
                 PasteField(hr_prompt, "Hires prompt", api="hr_prompt"),
                 PasteField(hr_negative_prompt, "Hires negative prompt", api="hr_negative_prompt"),
+                PasteField(hr_extra_prompt, "Hires extra prompt", api="hr_extra_prompt"),
                 PasteField(hr_cfg, "Hires CFG Scale", api="hr_cfg"),
                 PasteField(hr_distilled_cfg, "Hires Distilled CFG Scale", api="hr_distilled_cfg"),
-                PasteField(hr_prompts_container, lambda d: gr.update(visible=True) if d.get("Hires prompt", "") != "" or d.get("Hires negative prompt", "") != "" else gr.update()),
+                PasteField(hr_prompts_container, lambda d: gr.update(visible=True) if d.get("Hires prompt", "") != "" or d.get("Hires negative prompt", "") != "" or d.get("Hires extra prompt", "") != "" else gr.update()),
                 *scripts.scripts_txt2img.infotext_fields,
             ]
             parameters_copypaste.add_paste_fields("txt2img", None, txt2img_paste_fields, override_settings)

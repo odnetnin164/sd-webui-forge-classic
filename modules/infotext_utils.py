@@ -365,6 +365,9 @@ Steps: 20, Sampler: Euler a, CFG scale: 7, Seed: 965400086, Size: 512x512, Model
     if "Hires negative prompt" not in res:
         res["Hires negative prompt"] = ""
 
+    if "Hires extra prompt" not in res:
+        res["Hires extra prompt"] = ""
+
     if "Mask mode" not in res:
         res["Mask mode"] = "Inpaint masked"
 
