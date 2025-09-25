@@ -298,12 +298,13 @@ class UiSettings:
         self.interface = settings_interface
 
     def add_quicksettings(self):
-        with gr.Row(elem_id="quicksettings", variant="compact") as quicksettings_row:
-            main_entry.make_checkpoint_manager_ui()
-            for _i, k, _item in sorted(self.quicksettings_list, key=lambda x: self.quicksettings_names.get(x[1], x[0])):
-                component = create_setting_component(k, is_quicksettings=True)
-                self.component_dict[k] = component
-        return quicksettings_row
+        with gr.Accordion("Quick Settings", open=False, elem_id="quicksettings") as quicksettings_accordion:
+            with gr.Row(elem_id="quicksettings", variant="compact") as quicksettings_row:
+                main_entry.make_checkpoint_manager_ui()
+                for _i, k, _item in sorted(self.quicksettings_list, key=lambda x: self.quicksettings_names.get(x[1], x[0])):
+                    component = create_setting_component(k, is_quicksettings=True)
+                    self.component_dict[k] = component
+        return quicksettings_accordion
 
     def add_functionality(self, demo):
         self.submit.click(
