@@ -390,7 +390,7 @@ def attention_sage(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=
         if skip_output_reshape:
             return out
         else:
-            out = out.transpose(1, 2).reshape(b, -1, heads * dim_head)
+            return out.transpose(1, 2).reshape(b, -1, heads * dim_head)
 
     else:
         if skip_output_reshape:
@@ -434,7 +434,7 @@ def attention_flash(q, k, v, heads, mask=None, attn_precision=None, skip_reshape
     if skip_output_reshape:
         return out
     else:
-        out = out.transpose(1, 2).reshape(b, -1, heads * dim_head)
+        return out.transpose(1, 2).reshape(b, -1, heads * dim_head)
 
 
 if memory_management.sage_enabled():
