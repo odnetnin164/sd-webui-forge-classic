@@ -421,11 +421,8 @@ Steps: 20, Sampler: Euler a, CFG scale: 7, Seed: 965400086, Size: 512x512, Model
     for key in skip_fields:
         res.pop(key, None)
 
-    # basic check for same checkpoint using short name
-    checkpoint = res.get('Model', None)
-    if checkpoint is not None:
-        if checkpoint in shared.opts.sd_model_checkpoint:
-            res.pop('Model')
+    # checkpoint override is not supported
+    res.pop('Model', None)
 
     # VAE / TE
     modules = []
