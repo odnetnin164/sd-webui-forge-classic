@@ -6,16 +6,7 @@ import torch
 from einops import rearrange, repeat
 from torch import nn
 
-from backend.nn.flux import (
-    EmbedND,
-    MLPEmbedder,
-    QKNorm,
-    RMSNorm,
-    SelfAttention,
-    attention,
-    rope,
-    timestep_embedding,
-)
+from backend.nn.flux import EmbedND, MLPEmbedder, QKNorm, RMSNorm, SelfAttention, attention, timestep_embedding
 from backend.utils import fp16_fix
 
 
@@ -65,33 +56,37 @@ class DoubleStreamBlock(nn.Module):
             nn.Linear(mlp_hidden_dim, hidden_size, bias=True),
         )
 
-    def forward(self, img, txt, mod, pe):
+    def forward(self, img: torch.Tensor, txt: torch.Tensor, mod: torch.Tensor, pe: torch.Tensor, attn_mask=None, transformer_options={}):
         (img_mod1, img_mod2), (txt_mod1, txt_mod2) = mod
-        img_modulated = self.img_norm1(img)
-        img_modulated = (1 + img_mod1.scale) * img_modulated + img_mod1.shift
+
+        img_modulated = torch.addcmul(img_mod1.shift, 1 + img_mod1.scale, self.img_norm1(img))
         img_qkv = self.img_attn.qkv(img_modulated)
-        B, L, _ = img_qkv.shape
-        H = self.num_heads
-        D = img_qkv.shape[-1] // (3 * H)
-        img_q, img_k, img_v = img_qkv.view(B, L, 3, H, D).permute(2, 0, 3, 1, 4)
+        img_q, img_k, img_v = img_qkv.view(img_qkv.shape[0], img_qkv.shape[1], 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         img_q, img_k = self.img_attn.norm(img_q, img_k, img_v)
-        txt_modulated = self.txt_norm1(txt)
-        txt_modulated = (1 + txt_mod1.scale) * txt_modulated + txt_mod1.shift
+
+        txt_modulated = torch.addcmul(txt_mod1.shift, 1 + txt_mod1.scale, self.txt_norm1(txt))
         txt_qkv = self.txt_attn.qkv(txt_modulated)
-        B, L, _ = txt_qkv.shape
-        txt_q, txt_k, txt_v = txt_qkv.view(B, L, 3, H, D).permute(2, 0, 3, 1, 4)
+        txt_q, txt_k, txt_v = txt_qkv.view(txt_qkv.shape[0], txt_qkv.shape[1], 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         txt_q, txt_k = self.txt_attn.norm(txt_q, txt_k, txt_v)
-        q = torch.cat((txt_q, img_q), dim=2)
-        k = torch.cat((txt_k, img_k), dim=2)
-        v = torch.cat((txt_v, img_v), dim=2)
-        attn = attention(q, k, v, pe=pe)
+
+        attn = attention(
+            torch.cat((txt_q, img_q), dim=2),
+            torch.cat((txt_k, img_k), dim=2),
+            torch.cat((txt_v, img_v), dim=2),
+            pe=pe,
+            mask=attn_mask,
+            transformer_options=transformer_options,
+        )
+
         txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
-        img = img + img_mod1.gate * self.img_attn.proj(img_attn)
-        img = img + img_mod2.gate * self.img_mlp((1 + img_mod2.scale) * self.img_norm2(img) + img_mod2.shift)
-        txt = txt + txt_mod1.gate * self.txt_attn.proj(txt_attn)
-        txt = txt + txt_mod2.gate * self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift)
-        txt = fp16_fix(txt)
-        return img, txt
+
+        img.addcmul_(img_mod1.gate, self.img_attn.proj(img_attn))
+        img.addcmul_(img_mod2.gate, self.img_mlp(torch.addcmul(img_mod2.shift, 1 + img_mod2.scale, self.img_norm2(img))))
+
+        txt.addcmul_(txt_mod1.gate, self.txt_attn.proj(txt_attn))
+        txt.addcmul_(txt_mod2.gate, self.txt_mlp(torch.addcmul(txt_mod2.shift, 1 + txt_mod2.scale, self.txt_norm2(txt))))
+
+        return img, fp16_fix(txt)
 
 
 class SingleStreamBlock(nn.Module):
@@ -109,25 +104,17 @@ class SingleStreamBlock(nn.Module):
         self.pre_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.mlp_act = nn.GELU(approximate="tanh")
 
-    def forward(self, x, mod, pe):
-        x_mod = (1 + mod.scale) * self.pre_norm(x) + mod.shift
+    def forward(self, x: torch.Tensor, mod: torch.Tensor, pe: torch.Tensor, attn_mask=None, transformer_options={}) -> torch.Tensor:
+        x_mod = torch.addcmul(mod.shift, 1 + mod.scale, self.pre_norm(x))
         qkv, mlp = torch.split(self.linear1(x_mod), [3 * self.hidden_size, self.mlp_hidden_dim], dim=-1)
-        del x_mod
 
-        # q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
-        qkv = qkv.view(qkv.size(0), qkv.size(1), 3, self.num_heads, self.hidden_size // self.num_heads)
-        q, k, v = qkv.permute(2, 0, 3, 1, 4)
-        del qkv
-
+        q, k, v = qkv.view(qkv.shape[0], qkv.shape[1], 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         q, k = self.norm(q, k, v)
-        attn = attention(q, k, v, pe=pe)
-        del q, k, v, pe
-        output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), dim=2))
-        del attn, mlp
 
-        x = x + mod.gate * output
-        x = fp16_fix(x)
-        return x
+        attn = attention(q, k, v, pe=pe, mask=attn_mask, transformer_options=transformer_options)
+        output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
+        x.addcmul_(mod.gate, output)
+        return fp16_fix(x)
 
 
 class LastLayer(nn.Module):
@@ -136,11 +123,11 @@ class LastLayer(nn.Module):
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
 
-    def forward(self, x, mod):
+    def forward(self, x: torch.Tensor, mod: torch.Tensor) -> torch.Tensor:
         shift, scale = mod
         shift = shift.squeeze(1)
         scale = scale.squeeze(1)
-        x = (1 + scale[:, None, :]) * self.norm_final(x) + shift[:, None, :]
+        x = torch.addcmul(shift[:, None, :], 1 + scale[:, None, :], self.norm_final(x))
         x = self.linear(x)
         return x
 
