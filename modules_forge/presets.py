@@ -23,7 +23,7 @@ SAMPLERS = {
     PresetArch.sd: "Euler a",
     PresetArch.xl: "DPM++ 2M SDE",
     PresetArch.flux: "Euler",
-    PresetArch.qwen: "LCM",
+    PresetArch.qwen: "Euler",
     PresetArch.wan: "Euler",
 }
 
@@ -31,7 +31,7 @@ SCHEDULERS = {
     PresetArch.sd: "Automatic",
     PresetArch.xl: "Karras",
     PresetArch.flux: "Beta",
-    PresetArch.qwen: "Normal",
+    PresetArch.qwen: "Beta",
     PresetArch.wan: "Simple",
 }
 
