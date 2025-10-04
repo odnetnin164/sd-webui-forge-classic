@@ -4,7 +4,7 @@ import einops
 import torch
 
 from backend import memory_management
-from backend.args import args, SageAttentionFuncs
+from backend.args import SageAttentionFuncs, args
 from modules.errors import display_once
 
 if memory_management.xformers_enabled():
@@ -334,6 +334,7 @@ def attention_pytorch(q, k, v, heads, mask=None, attn_precision=None, skip_resha
 
 if IS_SAGE_2 and args.sage2_function is not SageAttentionFuncs.auto:
     from functools import partial
+
     import sageattention
 
     _function = getattr(sageattention, f"sageattn_qk_int8_pv_{args.sage2_function.value}")
