@@ -157,43 +157,36 @@ def replace_torchsde_browinan():
 replace_torchsde_browinan()
 
 
-def apply_refiner(cfg_denoiser, x):
-    completed_ratio = cfg_denoiser.step / cfg_denoiser.total_steps
+def apply_refiner(cfg_denoiser, x, sigma):
     refiner_switch_at = cfg_denoiser.p.refiner_switch_at
-    refiner_checkpoint_info = cfg_denoiser.p.refiner_checkpoint_info
-
-    if refiner_switch_at is not None and completed_ratio < refiner_switch_at:
+    if refiner_switch_at is None or float(sigma) > refiner_switch_at:
         return False
 
+    refiner_checkpoint_info = cfg_denoiser.p.refiner_checkpoint_info
     if refiner_checkpoint_info is None or shared.sd_model.sd_checkpoint_info == refiner_checkpoint_info:
         return False
 
     if getattr(cfg_denoiser.p, "enable_hr", False):
-        is_second_pass = cfg_denoiser.p.is_hr_pass
-
-        if opts.hires_fix_refiner_pass == "first pass" and is_second_pass:
-            return False
-
-        if opts.hires_fix_refiner_pass == "second pass" and not is_second_pass:
-            return False
-
-        if opts.hires_fix_refiner_pass != "second pass":
-            cfg_denoiser.p.extra_generation_params["Hires refiner"] = opts.hires_fix_refiner_pass
+        print("\n\n[Error]Refiner does not support Hires. fix\n\n")
+        return False
 
     cfg_denoiser.p.extra_generation_params["Refiner"] = refiner_checkpoint_info.short_title
     cfg_denoiser.p.extra_generation_params["Refiner switch at"] = refiner_switch_at
 
     sampling_cleanup(sd_models.model_data.get_sd_model().forge_objects.unet)
 
-    with sd_models.SkipWritingToConfig():
-        fp_checkpoint = getattr(shared.opts, "sd_model_checkpoint")
-        checkpoint_changed = main_entry.checkpoint_change(refiner_checkpoint_info.short_title, preset=None, save=False, refresh=False)
-        if checkpoint_changed:
-            try:
-                main_entry.refresh_model_loading_parameters()
-                sd_models.forge_model_reload()
-            finally:
-                main_entry.checkpoint_change(fp_checkpoint, preset=None, save=False, refresh=True)
+    original_checkpoint = getattr(shared.opts, "sd_model_checkpoint")
+    checkpoint_changed = main_entry.checkpoint_change(refiner_checkpoint_info.short_title, preset=None, save=False, refresh=False)
+    if not checkpoint_changed:
+        return False
+
+    del cfg_denoiser.model_wrap
+
+    try:
+        main_entry.refresh_model_loading_parameters()
+        sd_models.forge_model_reload()
+    finally:
+        main_entry.checkpoint_change(original_checkpoint, preset=None, save=False, refresh=True)
 
     if not cfg_denoiser.p.disable_extra_networks:
         extra_networks.activate(cfg_denoiser.p, cfg_denoiser.p.extra_network_data)

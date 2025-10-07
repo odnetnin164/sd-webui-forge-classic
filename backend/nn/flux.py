@@ -14,7 +14,7 @@ from backend.attention import attention_function
 from backend.utils import fp16_fix, process_img, tensor2parameter
 
 
-def attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, pe: torch.Tensor) -> torch.Tensor:
+def attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, pe: torch.Tensor, mask=None, transformer_options={}) -> torch.Tensor:
     q_shape = q.shape
     k_shape = k.shape
 
@@ -25,8 +25,7 @@ def attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, pe: torch.Tenso
         k = (pe[..., 0] * k[..., 0] + pe[..., 1] * k[..., 1]).reshape(*k_shape).type_as(v)
 
     heads = q.shape[1]
-    x = attention_function(q, k, v, heads, skip_reshape=True)
-    return x
+    return attention_function(q, k, v, heads, skip_reshape=True, mask=mask, transformer_options=transformer_options)
 
 
 def rope(pos: torch.Tensor, dim: int, theta: int) -> torch.Tensor:

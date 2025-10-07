@@ -54,7 +54,6 @@ class CFGDenoiser(torch.nn.Module):
         self.padded_cond_uncond = False
         self.padded_cond_uncond_v0 = False
         self.sampler = sampler
-        self.model_wrap = None
         self.p = None
 
         self.need_last_noise_uncond = False
@@ -166,7 +165,7 @@ class CFGDenoiser(torch.nn.Module):
             x = x * (((real_sigma**2.0 + real_sigma_data**2.0) ** 0.5)[:, None, None, None])
             sigma = real_sigma
 
-        if sd_samplers_common.apply_refiner(self, x):
+        if sd_samplers_common.apply_refiner(self, x, sigma[0]):
             cond = self.sampler.sampler_extra_args["cond"]
             uncond = self.sampler.sampler_extra_args["uncond"]
 

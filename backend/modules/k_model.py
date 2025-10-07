@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from backend import attention, memory_management
+from backend import memory_management
 from backend.modules.k_prediction import k_prediction_from_diffusers_scheduler
 
 
@@ -56,3 +56,8 @@ class KModel(torch.nn.Module):
             return (area * memory_management.dtype_size(self.computation_dtype) * 0.01 * self.config.memory_usage_factor) * (1024 * 1024)
         else:
             return (area * 0.15 * self.config.memory_usage_factor) * (1024 * 1024)
+
+    def cleanup(self):
+        del self.config
+        del self.predictor
+        del self.diffusion_model

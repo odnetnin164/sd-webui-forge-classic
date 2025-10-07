@@ -10,6 +10,7 @@ from modules.ui_components import InputAccordion
 class ScriptRefiner(scripts.ScriptBuiltinUI):
     section = "accordions"
     create_group = False
+    ckpts = []
 
     def title(self):
         return "Refiner"
@@ -17,12 +18,20 @@ class ScriptRefiner(scripts.ScriptBuiltinUI):
     def show(self, is_img2img):
         return scripts.AlwaysVisible if opts.show_refiner else None
 
+    @classmethod
+    def refresh_checkpoints(cls):
+        from modules_forge.main_entry import refresh_models
+
+        ckpt_list, _ = refresh_models()
+        cls.ckpts = ["None"] + ckpt_list
+
     def ui(self, is_img2img):
+        self.refresh_checkpoints()
         with InputAccordion(False, label="Refiner", elem_id=self.elem_id("enable")) as enable_refiner:
             with gr.Row():
-                refiner_checkpoint = gr.Dropdown(label="Checkpoint", info="(use model of same architecture)", elem_id=self.elem_id("checkpoint"), choices=["", *sd_models.checkpoint_tiles(use_short=True)], value="", tooltip="switch to another model in the middle of generation")
-                create_refresh_button(refiner_checkpoint, sd_models.list_models, lambda: {"choices": sd_models.checkpoint_tiles(use_short=True)}, self.elem_id("checkpoint_refresh"))
-                refiner_switch_at = gr.Slider(value=0.8, label="Switch at", minimum=0.01, maximum=1.0, step=0.01, elem_id=self.elem_id("switch_at"), tooltip="fraction of sampling steps when the switch to refiner model should happen; 1=never, 0.5=switch in the middle of generation")
+                refiner_checkpoint = gr.Dropdown(value="None", label="Checkpoint", info="(use model of same architecture)", elem_id=self.elem_id("checkpoint"), choices=self.ckpts)
+                create_refresh_button(refiner_checkpoint, self.refresh_checkpoints, lambda: {"choices": self.ckpts}, self.elem_id("checkpoint_refresh"))
+                refiner_switch_at = gr.Slider(value=0.875, label="Switch at", info="(in sigmas)", minimum=0.1, maximum=1.0, step=0.025, elem_id=self.elem_id("switch_at"), tooltip="Wan 2.2 T2V: 0.875 ; Wan 2.2 I2V: 0.9")
 
         def lookup_checkpoint(title):
             info = sd_models.get_closet_checkpoint_match(title)
@@ -37,7 +46,7 @@ class ScriptRefiner(scripts.ScriptBuiltinUI):
         return enable_refiner, refiner_checkpoint, refiner_switch_at
 
     def setup(self, p, enable_refiner, refiner_checkpoint, refiner_switch_at):
-        # the actual implementation is in sd_samplers_common.py, apply_refiner
+        # the actual implementation is in sd_samplers_common.py apply_refiner()
         if not enable_refiner or refiner_checkpoint in (None, "", "None"):
             p.refiner_checkpoint = None
             p.refiner_switch_at = None

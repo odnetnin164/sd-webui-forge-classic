@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 from einops import repeat
 
+from backend import args
 from backend.attention import attention_function as optimized_attention
 from backend.memory_management import cast_to_device
 from backend.nn.flux import EmbedND, _apply_rope
@@ -433,8 +434,8 @@ class WanModel(nn.Module):
         bs, c, t, h, w = x.shape
 
         if c < self.in_dim:
-            assert hasattr(self, "z")
-            x = torch.cat((x, self.z.to(x)), dim=1)
+            assert "ref_latents" in args.dynamic_args
+            x = torch.cat((x, args.dynamic_args["ref_latents"].to(x)), dim=1)
             bs, c, t, h, w = x.shape
 
         x = pad_to_patch_size(x, self.patch_size)

@@ -277,6 +277,32 @@ def replace_state_dict(sd: dict[str, torch.Tensor], asd: dict[str, torch.Tensor]
         asd.clear()
         asd = asd_new
 
+    if "blk.0.attn_norm.weight" in asd:
+        gguf_llm_format = {  # city96
+            "blk.": "model.layers.",
+            "attn_norm": "input_layernorm",
+            "attn_q": "self_attn.q_proj",
+            "attn_k": "self_attn.k_proj",
+            "attn_v": "self_attn.v_proj",
+            "attn_output": "self_attn.o_proj",
+            "ffn_up": "mlp.up_proj",
+            "ffn_down": "mlp.down_proj",
+            "ffn_gate": "mlp.gate_proj",
+            "ffn_norm": "post_attention_layernorm",
+            "token_embd": "model.embed_tokens",
+            "output_norm": "model.norm",
+            "output.weight": "lm_head.weight",
+        }
+        asd_new = {}
+        for k, v in asd.items():
+            for s, d in gguf_llm_format.items():
+                k = k.replace(s, d)
+            asd_new[k] = v
+        for k in ("model.embed_tokens.weight",):
+            asd_new[k] = asd_new[k].dequantize_as_pytorch_parameter()
+        asd.clear()
+        asd = asd_new
+
     #   sd / sdxl / wan                  # wan
     if "decoder.conv_in.weight" in asd or "decoder.middle.0.residual.0.gamma" in asd:
         keys_to_delete = [k for k in sd if k.startswith(vae_key_prefix)]
@@ -482,9 +508,22 @@ def preprocess_state_dict(sd):
 
 
 def split_state_dict(sd, additional_state_dicts: list = None):
-    sd = load_torch_file(sd)
+    sd, metadata = load_torch_file(sd, return_metadata=True)
     sd = preprocess_state_dict(sd)
     guess = huggingface_guess.guess(sd)
+
+    if "Qwen" in guess.huggingface_repo and getattr(guess, "nunchaku", False):
+        import json
+
+        from nunchaku.utils import get_precision_from_quantization_config
+
+        quantization_config = json.loads(metadata["quantization_config"])
+        guess.unet_config.update(
+            {
+                "precision": get_precision_from_quantization_config(quantization_config),
+                "rank": quantization_config.get("rank", 32),
+            }
+        )
 
     if isinstance(additional_state_dicts, list):
         for asd in additional_state_dicts:

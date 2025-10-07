@@ -2,7 +2,7 @@ import torch
 from huggingface_guess import model_list
 from huggingface_guess.utils import resize_to_batch_size
 
-from backend import memory_management
+from backend import args, memory_management
 from backend.diffusion_engine.base import ForgeDiffusionEngine, ForgeObjects
 from backend.modules.k_prediction import PredictionDiscreteFlow
 from backend.patcher.clip import CLIP
@@ -91,7 +91,7 @@ class Wan(ForgeDiffusionEngine):
         else:
             z = torch.cat((mask, image), dim=1)
 
-        self.forge_objects.unet.model.diffusion_model.z = z
+        args.dynamic_args["ref_latents"] = z
 
     @torch.inference_mode()
     def encode_first_stage(self, x):

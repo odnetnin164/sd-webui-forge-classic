@@ -315,11 +315,28 @@ function setupResolutionPasting(tabname) {
     }
 }
 
+/**
+ * Allow the user to click on the Style name in order to deselect it just like Gradio 3
+ */
+function restoreStyleDeselection(tabname) {
+    const dropdown = document.getElementById(`${tabname}_styles`);
+    dropdown.addEventListener("click", (e) => {
+        const style = e.target.closest("div.token");
+        if (style) {
+            style.querySelector("div.token-remove").click();
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    });
+}
+
 onUiLoaded(function () {
     showRestoreProgressButton("txt2img", localGet("txt2img_task_id"));
     showRestoreProgressButton("img2img", localGet("img2img_task_id"));
     setupResolutionPasting("txt2img");
     setupResolutionPasting("img2img");
+    restoreStyleDeselection("txt2img");
+    restoreStyleDeselection("img2img");
 });
 
 function modelmerger() {

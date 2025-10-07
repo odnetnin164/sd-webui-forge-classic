@@ -281,7 +281,7 @@ def requirements_met(requirements_file):
 def prepare_environment():
     torch_index_url = os.environ.get("TORCH_INDEX_URL", "https://download.pytorch.org/whl/cu128")
     torch_command = os.environ.get("TORCH_COMMAND", f"pip install torch==2.8.0+cu128 torchvision==0.23.0+cu128 --extra-index-url {torch_index_url}")
-    xformers_package = os.environ.get("XFORMERS_PACKAGE", f"xformers==0.0.32.post1 --extra-index-url {torch_index_url}")
+    xformers_package = os.environ.get("XFORMERS_PACKAGE", f"xformers==0.0.32.post2 --extra-index-url {torch_index_url}")
     sage_package = os.environ.get("SAGE_PACKAGE", "sageattention==1.0.6")
 
     clip_package = os.environ.get("CLIP_PACKAGE", "https://github.com/openai/CLIP/archive/d50d76daa670286dd6cacf3bcd80b5e4823fc8e1.zip")
@@ -321,7 +321,7 @@ def prepare_environment():
     ver_PY = f"cp{sys.version_info.major}{sys.version_info.minor}"
     ver_FLASH = "2.8.2"
     ver_TRITON = "3.4.0"
-    ver_NUNCHAKU = "1.0.0"
+    ver_NUNCHAKU = "1.0.1"
     ver_TORCH = _torch_version()
 
     if os.name == "nt":

@@ -2,12 +2,16 @@ import json
 import os
 
 import gguf
-import safetensors.torch
+import safetensors
 import torch
 from einops import rearrange, repeat
 
 import backend.misc.checkpoint_pickle
+from backend.args import args
 from backend.operations_gguf import ParameterGGUF
+
+MMAP_TORCH_FILES = args.mmap_torch_files
+DISABLE_MMAP = args.disable_mmap
 
 
 def read_arbitrary_config(directory):
@@ -22,32 +26,59 @@ def read_arbitrary_config(directory):
     return config_data
 
 
-def load_torch_file(ckpt, safe_load=False, device=None):
+def load_torch_file(ckpt: str, safe_load=False, device=None, *, return_metadata=False):
+    """https://github.com/comfyanonymous/ComfyUI/blob/v0.3.62/comfy/utils.py#L53"""
     if device is None:
         device = torch.device("cpu")
-    if ckpt.lower().endswith(".safetensors"):
-        sd = safetensors.torch.load_file(ckpt, device=device.type)
+
+    metadata = None
+    if ckpt.lower().endswith(".safetensors") or ckpt.lower().endswith(".sft"):
+        try:
+            with safetensors.safe_open(ckpt, framework="pt", device=device.type) as f:
+                sd = {}
+                for k in f.keys():
+                    tensor = f.get_tensor(k)
+                    if DISABLE_MMAP:
+                        tensor = tensor.to(device=device, copy=True)
+                    sd[k] = tensor
+                if return_metadata:
+                    metadata = f.metadata()
+        except Exception as e:
+            if len(e.args) > 0:
+                if "HeaderTooLarge" in e.args[0] or "MetadataIncompleteBuffer" in e.args[0]:
+                    raise ValueError('\nModel: "{}" is corrupt or invalid...'.format(ckpt))
+            raise e
+
     elif ckpt.lower().endswith(".gguf"):
         reader = gguf.GGUFReader(ckpt)
         sd = {}
         for tensor in reader.tensors:
             sd[str(tensor.name)] = ParameterGGUF(tensor)
+
     else:
-        if safe_load:
-            if not "weights_only" in torch.load.__code__.co_varnames:
-                print("Warning torch.load doesn't support weights_only on this pytorch version, loading unsafely.")
-                safe_load = False
-        if safe_load:
-            pl_sd = torch.load(ckpt, map_location=device, weights_only=True)
+        torch_args = {}
+
+        if not safe_load:
+            torch_args["pickle_module"] = backend.misc.checkpoint_pickle
         else:
-            pl_sd = torch.load(ckpt, map_location=device, pickle_module=backend.misc.checkpoint_pickle)
-        if "global_step" in pl_sd:
-            print(f"Global Step: {pl_sd['global_step']}")
+            torch_args["weights_only"] = True
+            if MMAP_TORCH_FILES:
+                torch_args["mmap"] = True
+
+        pl_sd = torch.load(ckpt, map_location=device, **torch_args)
+
         if "state_dict" in pl_sd:
             sd = pl_sd["state_dict"]
         else:
-            sd = pl_sd
-    return sd
+            if len(pl_sd) == 1:
+                key = list(pl_sd.keys())[0]
+                sd = pl_sd[key]
+                if not isinstance(sd, dict):
+                    sd = pl_sd
+            else:
+                sd = pl_sd
+
+    return (sd, metadata) if return_metadata else sd
 
 
 def set_attr(obj, attr, value):
@@ -105,12 +136,11 @@ def tensor2parameter(x):
 
 
 def fp16_fix(x):
-    # An interesting trick to avoid fp16 overflow
-    # Source: https://github.com/lllyasviel/stable-diffusion-webui-forge/issues/1114
-    # Related: https://github.com/comfyanonymous/ComfyUI/blob/f1d6cef71c70719cc3ed45a2455a4e5ac910cd5e/comfy/ldm/flux/layers.py#L180
+    # avoid fp16 overflow
+    # https://github.com/comfyanonymous/ComfyUI/blob/v0.3.62/comfy/ldm/chroma/layers.py#L111
 
-    if x.dtype in [torch.float16]:
-        return x.clip(-32768.0, 32768.0)
+    if x.dtype == torch.float16:
+        return torch.nan_to_num(x, nan=0.0, posinf=65504, neginf=-65504)
     return x
 
 

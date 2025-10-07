@@ -586,9 +586,6 @@ class LoadedModel:
     def __eq__(self, other: "LoadedModel"):
         return self.model is other.model
 
-    def __del__(self):
-        del self.model
-
 
 WINDOWS = any(platform.win32_ver())
 
@@ -1060,14 +1057,12 @@ def pytorch_attention_flash_attention():
 def force_upcast_attention_dtype():
     upcast = args.force_upcast_attention
     try:
-        if platform.mac_ver()[0] in ["14.5"]:  # black image bug on OSX Sonoma 14.5
+        if tuple(int(n) for n in platform.mac_ver()[0].split(".")) >= (14, 5):
             upcast = True
     except Exception:
         pass
-    if upcast:
-        return torch.float32
-    else:
-        return None
+
+    return {torch.float16: torch.float32} if upcast else None
 
 
 def get_free_memory(dev=None, torch_free_too=False):
