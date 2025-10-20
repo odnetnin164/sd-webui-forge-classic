@@ -602,7 +602,7 @@ def free_memory(memory_required: float, device: torch.device, keep_loaded: list[
     return unloaded_models
 
 
-def load_models_gpu(models: list["ModelPatcher"], memory_required: float = 0, force_patch_weights: bool = False, minimum_memory_required: float = None, force_full_load: bool = False):
+def load_models_gpu(models: list["ModelPatcher"], memory_required: float = 0, force_patch_weights: bool = False, minimum_memory_required: float = None, force_full_load: bool = False, timer=None):
     execution_start_time = time.perf_counter()
     cleanup_models_gc(target=models)
 
@@ -692,8 +692,8 @@ def load_models_gpu(models: list["ModelPatcher"], memory_required: float = 0, fo
         logger.info(f"Moving model(s) has taken {moving_time:.2f} seconds")
 
 
-def load_model_gpu(model: "ModelPatcher"):
-    return load_models_gpu([model])
+def load_model_gpu(model: "ModelPatcher", timer=None):
+    return load_models_gpu([model], timer=timer)
 
 
 def loaded_models(only_currently_used: bool = False) -> list["LoadedModel"]:

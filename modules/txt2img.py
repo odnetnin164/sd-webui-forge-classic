@@ -15,7 +15,7 @@ from modules.ui import plaintext_to_html
 from modules_forge import main_thread
 
 
-def txt2img_create_processing(id_task: str, request: gr.Request, prompt: str, negative_prompt: str, prompt_styles, n_iter: int, batch_size: int, cfg_scale: float, distilled_cfg_scale: float, height: int, width: int, enable_hr: bool, denoising_strength: float, hr_scale: float, hr_upscaler: str, hr_second_pass_steps: int, hr_resize_x: int, hr_resize_y: int, hr_checkpoint_name: str, hr_additional_modules: list, hr_sampler_name: str, hr_scheduler: str, hr_prompt: str, hr_negative_prompt, hr_extra_prompt: str, hr_cfg: float, hr_distilled_cfg: float, override_settings_texts, *args, force_enable_hr=False):
+def txt2img_create_processing(id_task: str, request: gr.Request, prompt: str, negative_prompt: str, prompt_styles, extra_prompt: str, n_iter: int, batch_size: int, cfg_scale: float, distilled_cfg_scale: float, height: int, width: int, enable_hr: bool, denoising_strength: float, hr_scale: float, hr_upscaler: str, hr_second_pass_steps: int, hr_resize_x: int, hr_resize_y: int, hr_checkpoint_name: str, hr_additional_modules: list, hr_sampler_name: str, hr_scheduler: str, hr_prompt: str, hr_negative_prompt, hr_extra_prompt: str, hr_cfg: float, hr_distilled_cfg: float, override_settings_texts, *args, force_enable_hr=False):
     override_settings = create_override_settings_dict(override_settings_texts)
 
     if force_enable_hr:
@@ -27,6 +27,7 @@ def txt2img_create_processing(id_task: str, request: gr.Request, prompt: str, ne
         prompt=prompt,
         styles=prompt_styles,
         negative_prompt=negative_prompt,
+        extra_prompt=extra_prompt,
         batch_size=batch_size,
         n_iter=n_iter,
         cfg_scale=cfg_scale,
@@ -46,6 +47,7 @@ def txt2img_create_processing(id_task: str, request: gr.Request, prompt: str, ne
         hr_scheduler=None if hr_scheduler == "Use same scheduler" else hr_scheduler,
         hr_prompt=hr_prompt,
         hr_negative_prompt=hr_negative_prompt,
+        hr_extra_prompt=hr_extra_prompt,
         hr_cfg=hr_cfg,
         hr_distilled_cfg=hr_distilled_cfg,
         override_settings=override_settings,

@@ -87,7 +87,21 @@ def single_sample_to_image(sample, approximation=None):
 
 def decode_first_stage(model, x):
     approx_index = approximation_indexes.get(opts.sd_vae_decode_method, 0)
-    return samples_to_images_tensor(x, approx_index, model)
+    result = samples_to_images_tensor(x, approx_index, model)
+
+    # Check for NaN in decoded output
+    if torch.isnan(result).any():
+        nan_count = torch.isnan(result).sum().item()
+        print(f"ERROR: VAE decoder produced {nan_count} NaN values!")
+        print(f"VAE decode method: {opts.sd_vae_decode_method} (index: {approx_index})")
+        print(f"Model type: {type(model).__name__}")
+        print(f"Input latent stats - min: {x.min().item():.4f}, max: {x.max().item():.4f}, mean: {x.mean().item():.4f}")
+
+        # Check if input has NaN
+        if torch.isnan(x).any():
+            print(f"WARNING: Input latents already contain {torch.isnan(x).sum().item()} NaN values!")
+
+    return result
 
 
 def sample_to_image(samples, index=0, approximation=None):
@@ -320,7 +334,8 @@ def apply_refiner(cfg_denoiser, x, sigma):
     cfg_denoiser.p.setup_conds()
     cfg_denoiser.update_inner_model()
 
-    sampling_prepare(shared.sd_model.forge_objects.unet, x=x)
+    timer = cfg_denoiser.p.timer if hasattr(cfg_denoiser.p, 'timer') else None
+    sampling_prepare(shared.sd_model.forge_objects.unet, x=x, timer=timer)
     return True
 
 
