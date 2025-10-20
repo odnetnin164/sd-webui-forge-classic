@@ -193,14 +193,18 @@ class VAE:
         encode_fn = lambda a: self.first_stage_model.encode((self.process_input(a)).to(self.vae_dtype).to(self.device)).float()
         return tiled_scale_multidim(samples, encode_fn, tile=(tile_t, tile_x, tile_y), overlap=overlap, upscale_amount=self.downscale_ratio, out_channels=self.latent_channels, downscale=True, index_formulas=self.downscale_index_formula, output_device=self.output_device)
 
-    def decode(self, samples_in: torch.Tensor):
+    def decode(self, samples_in: torch.Tensor, keep_loaded_models=None):
         if memory_management.VAE_ALWAYS_TILED:
             return self.decode_tiled(samples_in).to(self.output_device)
 
         pixel_samples = None
         try:
             memory_used = self.memory_used_decode(samples_in.shape, self.vae_dtype)
-            memory_management.load_models_gpu([self.patcher], memory_required=memory_used)
+            # Include additional models to keep loaded (e.g., UNet) to avoid unnecessary unloading
+            models_to_load = [self.patcher]
+            if keep_loaded_models:
+                models_to_load.extend(keep_loaded_models)
+            memory_management.load_models_gpu(models_to_load, memory_required=memory_used)
             free_memory = memory_management.get_free_memory(self.device)
             batch_number = int(free_memory / memory_used)
             batch_number = max(1, batch_number)

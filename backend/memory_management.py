@@ -584,7 +584,29 @@ class LoadedModel:
         self.real_model = None
 
     def __eq__(self, other: "LoadedModel"):
-        return self.model is other.model
+        # IMPORTANT: Check LoRAs first, even for same patcher object!
+        # LoRAs can be modified in-place on the same patcher, so we must check them
+        self_lora_keys = set(self.model.lora_patches.keys()) if hasattr(self.model, 'lora_patches') else set()
+        other_lora_keys = set(other.model.lora_patches.keys()) if hasattr(other.model, 'lora_patches') else set()
+
+        # If same patcher object with same LoRAs, it's equal
+        if self.model is other.model:
+            if self_lora_keys == other_lora_keys:
+                return True
+            else:
+                # Same patcher but different LoRAs - needs reload
+                print(f"[Memory] DEBUG: Same patcher but LoRA changed - self: {len(self_lora_keys)} loras, other: {len(other_lora_keys)} loras")
+                return False
+
+        # Check if both patchers reference the same underlying model (handles clones)
+        if hasattr(self.model, 'is_clone') and self.model.is_clone(other.model):
+            # Same underlying model, check LoRAs
+            if self_lora_keys != other_lora_keys:
+                # LoRAs are different - not equal
+                print(f"[Memory] DEBUG: Clone with LoRA mismatch - self: {len(self_lora_keys)} loras, other: {len(other_lora_keys)} loras")
+                return False
+            return True
+        return False
 
 
 WINDOWS = any(platform.win32_ver())
@@ -617,12 +639,13 @@ def unload_model_clones(model):
 
 
 def free_memory(memory_required, device, keep_loaded=[], free_all=False):
+    initial_free = get_free_memory(device)
     if free_all:
         memory_required = 1e30
-        print(f"[Unload] Trying to free all memory for {device} with {len(keep_loaded)} models keep loaded ... ", end="")
+        print(f"[Unload] Freeing all memory on {device} (keeping {len(keep_loaded)} models, currently {initial_free / (1024 * 1024):.0f} MB free) ... ", end="")
         offload_everything = True
     else:
-        print(f"[Unload] Trying to free {memory_required / (1024 * 1024):.2f} MB for {device} with {len(keep_loaded)} models keep loaded ... ", end="")
+        print(f"[Unload] Need {memory_required / (1024 * 1024):.0f} MB on {device} (keeping {len(keep_loaded)} models, currently {initial_free / (1024 * 1024):.0f} MB free) ... ", end="")
         offload_everything = ALWAYS_VRAM_OFFLOAD or vram_state is VRAMState.NO_VRAM
 
     unloaded_model = False
@@ -641,13 +664,20 @@ def free_memory(memory_required, device, keep_loaded=[], free_all=False):
 
     if unloaded_model:
         soft_empty_cache()
+        current_free = get_free_memory(device)
+        print(f"Freed memory. Now {current_free / (1024 * 1024):.0f} MB available.")
     else:
-        if vram_state != VRAMState.HIGH_VRAM:
+        # Only do expensive memory checks if we're in a constrained VRAM state
+        if vram_state != VRAMState.HIGH_VRAM and vram_state != VRAMState.NORMAL_VRAM:
             mem_free_total, mem_free_torch = get_free_memory(device, torch_free_too=True)
             if mem_free_torch > mem_free_total * 0.25:
                 soft_empty_cache()
-
-    print("Done.")
+                print(f"Cleared cache. {mem_free_total / (1024 * 1024):.0f} MB available.")
+            else:
+                print(f"No action needed. {mem_free_total / (1024 * 1024):.0f} MB available.")
+        else:
+            current_free = get_free_memory(device)
+            print(f"No action needed. {current_free / (1024 * 1024):.0f} MB available.")
 
 
 def compute_model_gpu_memory_when_using_cpu_swap(current_free_mem, inference_memory):
@@ -676,18 +706,77 @@ def load_models_gpu(models, memory_required=0, hard_memory_preservation=0, timer
             models_already_loaded.append(loaded_model)
             del load_model
         else:
-            models_to_load.append(load_model)
+            # Check if this is a clone of an already-loaded model with SAME LoRAs
+            found_clone = False
+            for i, existing in enumerate(current_loaded_models):
+                if hasattr(x, 'is_clone') and x.is_clone(existing.model):
+                    # Same underlying model, but check LoRAs
+                    new_lora_keys = set(x.lora_patches.keys()) if hasattr(x, 'lora_patches') else set()
+                    existing_lora_keys = set(existing.model.lora_patches.keys()) if hasattr(existing.model, 'lora_patches') else set()
+
+                    if new_lora_keys == existing_lora_keys:
+                        # Same model with same LoRAs - can reuse
+                        print(f"[Memory] DEBUG: Found clone of {existing.model.model.__class__.__name__} with matching LoRAs, reusing")
+                        loaded_model = current_loaded_models.pop(i)
+                        current_loaded_models.insert(0, loaded_model)
+                        models_already_loaded.append(loaded_model)
+                        found_clone = True
+                        break
+                    else:
+                        # Same model but different LoRAs - need to reload
+                        print(f"[Memory] DEBUG: Found clone of {existing.model.model.__class__.__name__} but LoRAs differ ({len(new_lora_keys)} vs {len(existing_lora_keys)}), will reload")
+
+            if not found_clone:
+                models_to_load.append(load_model)
 
     if len(models_to_load) == 0:
+        # All requested models are already loaded
+        model_names = ', '.join([m.model.model.__class__.__name__ for m in models_already_loaded])
+        print(f"[Memory] Checking {len(models_already_loaded)} already loaded model(s): {model_names}")
+
         devs = set(map(lambda a: a.device, models_already_loaded))
+
+        # Check if we actually need to free memory
+        needs_cleanup = False
         for d in devs:
             if d != torch.device("cpu"):
-                free_memory(memory_for_inference, d, models_already_loaded)
+                current_free = get_free_memory(d)
+                if current_free < memory_for_inference:
+                    needs_cleanup = True
+                    break
 
-        moving_time = time.perf_counter() - execution_start_time
-        print(f"Memory cleanup has taken {moving_time:.2f} seconds")
+        if needs_cleanup:
+            print(f"[Memory] Models already loaded but need to free {memory_for_inference / (1024 * 1024):.0f} MB")
+            for d in devs:
+                if d != torch.device("cpu"):
+                    free_memory(memory_for_inference, d, models_already_loaded)
+
+            moving_time = time.perf_counter() - execution_start_time
+            print(f"[Memory] Cleanup completed in {moving_time:.2f}s")
+        else:
+            # Models already loaded and sufficient memory available - skip expensive operations
+            moving_time = time.perf_counter() - execution_start_time
+            free_mb = get_free_memory(list(devs)[0]) / (1024 * 1024) if devs else 0
+            print(f"[Memory] Models already on GPU and ready ({moving_time * 1000:.1f} ms, {free_mb:.0f} MB free)")
 
         return
+
+    # Need to load new models
+    model_names_to_load = ', '.join([m.model.model.__class__.__name__ for m in models_to_load])
+    # Check if any models are being reloaded due to LoRA changes
+    lora_reload = False
+    for load_model in models_to_load:
+        for existing in current_loaded_models:
+            if hasattr(load_model.model, 'is_clone') and load_model.model.is_clone(existing.model):
+                lora_reload = True
+                break
+        if lora_reload:
+            break
+
+    if lora_reload:
+        print(f"[Memory] Reloading {len(models_to_load)} model(s) to GPU due to LoRA changes: {model_names_to_load}")
+    else:
+        print(f"[Memory] Loading {len(models_to_load)} new model(s) to GPU: {model_names_to_load}")
 
     for loaded_model in models_to_load:
         unload_model_clones(loaded_model.model)
@@ -732,7 +821,8 @@ def load_models_gpu(models, memory_required=0, hard_memory_preservation=0, timer
         current_loaded_models.insert(0, loaded_model)
 
     moving_time = time.perf_counter() - execution_start_time
-    print(f"Moving model(s) has taken {moving_time:.2f} seconds")
+    final_free = get_free_memory(torch_dev)
+    print(f"[Memory] Loaded {len(models_to_load)} model(s) to GPU in {moving_time:.2f}s ({final_free / (1024 * 1024):.0f} MB free)")
 
 
 def load_model_gpu(model, timer=None):
