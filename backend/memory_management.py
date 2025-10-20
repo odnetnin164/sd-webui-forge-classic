@@ -658,7 +658,7 @@ def compute_model_gpu_memory_when_using_cpu_swap(current_free_mem, inference_mem
     return int(max(0, suggestion))
 
 
-def load_models_gpu(models, memory_required=0, hard_memory_preservation=0):
+def load_models_gpu(models, memory_required=0, hard_memory_preservation=0, timer=None):
     global vram_state
 
     execution_start_time = time.perf_counter()
@@ -684,8 +684,8 @@ def load_models_gpu(models, memory_required=0, hard_memory_preservation=0):
             if d != torch.device("cpu"):
                 free_memory(memory_for_inference, d, models_already_loaded)
 
-        if (moving_time := time.perf_counter() - execution_start_time) > 0.1:
-            print(f"Memory cleanup has taken {moving_time:.2f} seconds")
+        moving_time = time.perf_counter() - execution_start_time
+        print(f"Memory cleanup has taken {moving_time:.2f} seconds")
 
         return
 
@@ -717,7 +717,7 @@ def load_models_gpu(models, memory_required=0, hard_memory_preservation=0):
             current_free_mem = get_free_memory(torch_dev)
             estimated_remaining_memory = current_free_mem - model_require - memory_for_inference
 
-            print(f"[Memory Management] Target: {loaded_model.model.model.__class__.__name__}, Free GPU: {current_free_mem / (1024 * 1024):.2f} MB, Model Require: {model_require / (1024 * 1024):.2f} MB, Previously Loaded: {previously_loaded / (1024 * 1024):.2f} MB, Inference Require: {memory_for_inference / (1024 * 1024):.2f} MB, Remaining: {estimated_remaining_memory / (1024 * 1024):.2f} MB, ", end="")
+            print(f"[Memory] Loading {loaded_model.model.model.__class__.__name__} ({model_require / (1024 * 1024):.0f} MB required, {current_free_mem / (1024 * 1024):.0f} MB free)", end="")
 
             if estimated_remaining_memory < 0:
                 vram_set_state = VRAMState.LOW_VRAM
@@ -735,8 +735,8 @@ def load_models_gpu(models, memory_required=0, hard_memory_preservation=0):
     print(f"Moving model(s) has taken {moving_time:.2f} seconds")
 
 
-def load_model_gpu(model):
-    return load_models_gpu([model])
+def load_model_gpu(model, timer=None):
+    return load_models_gpu([model], timer=timer)
 
 
 def cleanup_models():

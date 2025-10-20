@@ -246,6 +246,9 @@ def create_ui():
                     if category == "prompt":
                         toprow.create_inline_toprow_prompts()
 
+                        with FormRow(elem_id="txt2img_extra_prompt_row", variant="compact"):
+                            extra_prompt = gr.Textbox(label="Extra prompt (first pass only)", elem_id="txt2img_extra_prompt", show_label=True, lines=2, placeholder="Extra prompt to append to main prompt during first pass only.\nLeave empty if no extra prompt needed.", elem_classes=["prompt"])
+
                     elif category == "dimensions":
                         with FormRow():
                             with gr.Column(elem_id="txt2img_column_size", scale=4):
@@ -370,6 +373,7 @@ def create_ui():
                 toprow.prompt,
                 toprow.negative_prompt,
                 toprow.ui_styles.dropdown,
+                extra_prompt,
                 batch_count,
                 batch_size,
                 cfg_scale,
@@ -452,6 +456,7 @@ def create_ui():
             txt2img_paste_fields = [
                 PasteField(toprow.prompt, "Prompt", api="prompt"),
                 PasteField(toprow.negative_prompt, "Negative prompt", api="negative_prompt"),
+                PasteField(extra_prompt, "Extra prompt", api="extra_prompt"),
                 PasteField(cfg_scale, "CFG scale", api="cfg_scale"),
                 PasteField(distilled_cfg_scale, "Distilled CFG Scale", api="distilled_cfg_scale"),
                 PasteField(width, "Size-1", api="width"),

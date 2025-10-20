@@ -62,7 +62,12 @@ def load_lora_for_models(model: "UnetPatcher", clip, lora, strength_model, stren
     return model, clip
 
 
-@functools.lru_cache(maxsize=5)
+# Configurable LRU cache size for LoRA state dicts
+# Increased from 5 to 10 for better caching without excessive memory use
+# Each LoRA is typically 50-500MB, so 10 = ~500MB-5GB cache
+LORA_CACHE_SIZE = getattr(shared.opts, 'forge_lora_cache_size', 10)
+
+@functools.lru_cache(maxsize=LORA_CACHE_SIZE)
 def load_lora_state_dict(filename):
     return load_torch_file(filename, safe_load=True)
 

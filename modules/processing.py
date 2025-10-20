@@ -35,6 +35,9 @@ from modules_forge.utils import apply_circular_forge
 from modules_forge import main_entry
 from backend import memory_management
 from backend.modules.k_prediction import rescale_zero_terminal_snr_sigmas
+import time
+from collections import defaultdict
+from modules.generation_timer import GenerationTimer
 
 
 # some of those options should not be changed at all because they would break the model, so I removed them from options.
@@ -122,6 +125,7 @@ class StableDiffusionProcessing:
     prompt: str = ""
     prompt_for_display: str = None
     negative_prompt: str = ""
+    extra_prompt: str = ''
     styles: list[str] = None
     seed: int = -1
     subseed: int = -1
@@ -501,6 +505,10 @@ class StableDiffusionProcessing:
         return self.c, self.uc
 
     def parse_extra_network_prompts(self):
+        # Apply extra prompt to first pass prompts (only if not in hires pass)
+        if self.extra_prompt and not self.is_hr_pass:
+            self.prompts = [prompt + ', ' + self.extra_prompt if prompt else self.extra_prompt for prompt in self.prompts]
+
         self.prompts, self.extra_network_data = extra_networks.parse_prompts(self.prompts)
 
     def save_samples(self, *, is_video: bool = False) -> bool:
@@ -565,6 +573,7 @@ class Processed:
         self.version = program_version()
 
         self.video_path = None
+        self.timer = getattr(p, 'timer', None)  # Generation timer if available
 
     def js(self):
         obj = {
@@ -782,6 +791,16 @@ def create_infotext(p, all_prompts, all_seeds, all_subseeds, comments=None, iter
             errors.report(f'Error creating infotext for key "{key}"', exc_info=True)
             generation_params[key] = None
 
+    # Add timing information if available
+    if hasattr(p, 'timer') and p.timer is not None:
+        if use_main_prompt:
+            # For grids, show overall batch timing
+            timing_data = p.timer.format_for_metadata(use_batch=True)
+        else:
+            # For individual images, use the timer's format_for_metadata method
+            timing_data = p.timer.format_for_metadata(use_batch=False)
+        generation_params.update(timing_data)
+
     generation_params_text = ", ".join([k if k == v else f'{k}: {infotext_utils.quote(v)}' for k, v in generation_params.items() if v is not None])
 
     negative_prompt_text = f"\nNegative prompt: {negative_prompt}" if negative_prompt else ""
@@ -807,6 +826,10 @@ def manage_model_and_prompt_cache(p: StableDiffusionProcessing):
 
 def process_images(p: StableDiffusionProcessing) -> Processed:
     """applies settings overrides (if any) before processing images, then restores settings as applicable."""
+    # Initialize generation timer
+    p.timer = GenerationTimer()
+    p.timer.start('initialization')
+
     if p.scripts is not None:
         p.scripts.before_process(p)
 
@@ -826,6 +849,7 @@ def process_images(p: StableDiffusionProcessing) -> Processed:
             # avoid model load from hiresfix quickbutton, as it could be redundant
             pass
         else:
+            p.timer.start('model_loading')
             manage_model_and_prompt_cache(p)
 
         # backwards compatibility, fix sampler and scheduler if invalid
@@ -904,6 +928,7 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
         pass
 
     if p.scripts is not None:
+        p.timer.start('scripts_process')
         p.scripts.process(p)
 
     infotexts = []
@@ -924,6 +949,10 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
         for n in range(p.n_iter):
             p.iteration = n
 
+            # Reset image timer for each iteration (batch continues)
+            if n > 0:
+                p.timer.reset_image_timer()
+
             if state.skipped:
                 state.skipped = False
 
@@ -932,6 +961,7 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
 
             if not getattr(p, 'txt2img_upscale', False) or p.hr_checkpoint_name is None:
                 # hiresfix quickbutton may not need reload of firstpass model
+                p.timer.start('memory_management')
                 sd_models.forge_model_reload()  # model can be changed for example by refiner, hiresfix
 
             p.sd_model.forge_objects = p.sd_model.forge_objects_original.shallow_copy()
@@ -960,6 +990,7 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
             if p.scripts is not None:
                 p.scripts.process_batch(p, batch_number=n, prompts=p.prompts, seeds=p.seeds, subseeds=p.subseeds)
 
+            p.timer.start('text_encoding')
             p.setup_conds()
 
             p.extra_generation_params.update(p.sd_model.extra_generation_params)
@@ -988,6 +1019,13 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
                 sigmas_backup = p.sd_model.forge_objects.unet.model.predictor.sigmas
                 p.sd_model.forge_objects.unet.model.predictor.set_sigmas(rescale_zero_terminal_snr_sigmas(p.sd_model.forge_objects.unet.model.predictor.sigmas))
 
+            is_txt2img_with_hr = hasattr(p, 'enable_hr') and p.enable_hr
+
+            # For hires, the sample() method will start sampling_base/sampling_hires
+            # For non-hires, start the sampling phase here
+            if not is_txt2img_with_hr:
+                p.timer.start('sampling')
+
             samples_ddim = p.sample(conditioning=p.c, unconditional_conditioning=p.uc, seeds=p.seeds, subseeds=p.subseeds, subseed_strength=p.subseed_strength, prompts=p.prompts)
 
             for x_sample in samples_ddim:
@@ -1008,10 +1046,30 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
 
                 if opts.sd_vae_decode_method != 'Full':
                     p.extra_generation_params['VAE Decoder'] = opts.sd_vae_decode_method
+                p.timer.start('vae_decoding')
                 x_samples_ddim = decode_latent_batch(p.sd_model, samples_ddim, target_device=devices.cpu, check_for_nans=True)
 
             x_samples_ddim = torch.stack(x_samples_ddim).float()
+
+            # Check for NaN after stacking
+            if torch.isnan(x_samples_ddim).any():
+                nan_count = torch.isnan(x_samples_ddim).sum().item()
+                print(f"Warning: NaN detected after stacking decoded samples. Count: {nan_count}")
+                # Get stats excluding NaN values
+                valid_mask = ~torch.isnan(x_samples_ddim)
+                if valid_mask.any():
+                    valid_values = x_samples_ddim[valid_mask]
+                    print(f"Valid sample stats before clamp - min: {valid_values.min().item():.4f}, max: {valid_values.max().item():.4f}")
+                else:
+                    print("ERROR: All values are NaN! VAE decoding completely failed.")
+                print("This indicates the VAE decoder is producing NaN values.")
+
             x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+
+            # Check for NaN after clamping
+            if torch.isnan(x_samples_ddim).any():
+                print(f"Warning: NaN detected after clamping. Count: {torch.isnan(x_samples_ddim).sum().item()}")
+                print("This indicates the NaN came from VAE decoding, not from the clamping operation.")
 
             if len(x_samples_ddim.shape) == 5:
                 x_samples_ddim = x_samples_ddim.reshape(-1, *x_samples_ddim.shape[-3:])
@@ -1025,12 +1083,20 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
             if p.scripts is not None:
                 p.scripts.postprocess_batch(p, x_samples_ddim, batch_number=n)
 
+                # Check for NaN after postprocess_batch
+                if torch.isnan(x_samples_ddim).any():
+                    print(f"Warning: NaN detected after scripts.postprocess_batch. Count: {torch.isnan(x_samples_ddim).sum().item()}")
+
                 p.prompts = p.all_prompts[n * p.batch_size:(n + 1) * p.batch_size]
                 p.negative_prompts = p.all_negative_prompts[n * p.batch_size:(n + 1) * p.batch_size]
 
                 batch_params = scripts.PostprocessBatchListArgs(list(x_samples_ddim))
                 p.scripts.postprocess_batch_list(p, batch_params, batch_number=n)
                 x_samples_ddim = batch_params.images
+
+                # Check for NaN after postprocess_batch_list
+                if any(torch.isnan(img).any() for img in x_samples_ddim):
+                    print("Warning: NaN detected after scripts.postprocess_batch_list. A script may be causing this issue.")
 
             def infotext(index=0, use_main_prompt=False):
                 return create_infotext(p, p.prompts, p.seeds, p.subseeds, use_main_prompt=use_main_prompt, index=index, all_negative_prompts=p.negative_prompts)
@@ -1041,7 +1107,20 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
 
             for i, x_sample in enumerate(x_samples_ddim):
                 p.batch_index = i
+
+                p.timer.start('post_processing')
                 x_sample = 255. * np.moveaxis(x_sample.cpu().numpy(), 0, 2)
+
+                # Handle invalid values (NaN/Inf) before casting to uint8
+                if np.isnan(x_sample).any() or np.isinf(x_sample).any():
+                    nan_count = np.isnan(x_sample).sum()
+                    inf_count = np.isinf(x_sample).sum()
+                    print(f"Warning: Invalid values detected in image {i}: NaN={nan_count}, Inf={inf_count}")
+                    print("Replacing invalid values with valid defaults...")
+                    x_sample = np.nan_to_num(x_sample, nan=0.0, posinf=255.0, neginf=0.0)
+
+                # Ensure values are in valid range [0, 255]
+                x_sample = np.clip(x_sample, 0, 255)
                 x_sample = x_sample.astype(np.uint8)
                 if _is_video:
                     frames.append(x_sample)
@@ -1051,7 +1130,6 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
                         images.save_image(Image.fromarray(x_sample), p.outpath_samples, "", p.seeds[i], p.prompts[i], opts.samples_format, info=infotext(i), p=p, suffix="-before-face-restoration")
 
                     devices.torch_gc()
-
                     x_sample = modules.face_restoration.restore_faces(x_sample)
                     devices.torch_gc()
 
@@ -1095,7 +1173,9 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
                     p.scripts.postprocess_image_after_composite(p, pp)
                     image = pp.image
 
+                # Save with timing info embedded in metadata
                 if save_samples:
+                    p.timer.start('save_images')
                     images.save_image(image, p.outpath_samples, "", p.seeds[i], p.prompts[i], opts.samples_format, info=infotext(i), p=p)
 
                 text = infotext(i)
@@ -1168,6 +1248,16 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
     if p.scripts is not None:
         p.scripts.postprocess(p, res)
 
+    # Stop any running phase
+    p.timer.stop()
+
+    # Print generation summary
+    print("\n" + p.timer.format_summary())
+
+    # Print batch summary if multiple iterations
+    if p.n_iter > 1:
+        print(p.timer.format_batch_summary())
+
     return res
 
 
@@ -1234,6 +1324,8 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
     hr_prompts: list = field(default=None, init=False)
     hr_negative_prompts: list = field(default=None, init=False)
     hr_extra_network_data: list = field(default=None, init=False)
+    hr_prompt_is_custom: bool = field(default=False, init=False)
+    hr_negative_prompt_is_custom: bool = field(default=False, init=False)
 
     def __post_init__(self):
         super().__post_init__()
@@ -1311,10 +1403,14 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
                 self.extra_generation_params["Hires sampler"] = self.hr_sampler_name
 
             def get_hr_prompt(p, index, prompt_text, **kwargs):
+                if not p.hr_prompt_is_custom:
+                    return None
                 hr_prompt = p.all_hr_prompts[index]
                 return hr_prompt if hr_prompt != prompt_text else None
 
             def get_hr_negative_prompt(p, index, negative_prompt, **kwargs):
+                if not p.hr_negative_prompt_is_custom:
+                    return None
                 hr_negative_prompt = p.all_hr_negative_prompts[index]
                 return hr_negative_prompt if hr_negative_prompt != negative_prompt else None
 
@@ -1324,6 +1420,10 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
             # Add hires extra prompt to metadata if it exists
             if self.hr_extra_prompt:
                 self.extra_generation_params["Hires extra prompt"] = self.hr_extra_prompt
+
+            # Add extra prompt to metadata if it exists (for first pass)
+            if self.extra_prompt:
+                self.extra_generation_params["Extra prompt"] = self.extra_prompt
 
             self.extra_generation_params["Hires CFG Scale"] = self.hr_cfg
             self.extra_generation_params["Hires Distilled CFG Scale"] = None  # set after potential hires model load
@@ -1404,6 +1504,10 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
                 x = self.modified_noise
                 self.modified_noise = None
 
+            # Track base pass sampling separately when hires fix is enabled
+            if self.enable_hr:
+                self.timer.start('sampling_base')
+
             samples = self.sampler.sample(self, x, conditioning, unconditional_conditioning, image_conditioning=self.txt2img_image_conditioning(x))
             del x
 
@@ -1413,6 +1517,7 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
             devices.torch_gc()
 
             if self.latent_scale_mode is None:
+                self.timer.start('vae_decoding_base')
                 decoded_samples = torch.stack(decode_latent_batch(self.sd_model, samples, target_device=devices.cpu, check_for_nans=True)).to(dtype=torch.float32)
             else:
                 decoded_samples = None
@@ -1549,11 +1654,13 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
             noise = self.modified_noise
             self.modified_noise = None
 
+        self.timer.start('sampling_hires')
         samples = self.sampler.sample_img2img(self, samples, noise, self.hr_c, self.hr_uc, steps=self.hr_second_pass_steps or self.steps, image_conditioning=image_conditioning)
 
         self.sampler = None
         devices.torch_gc()
 
+        self.timer.start('vae_decoding_hires')
         decoded_samples = decode_latent_batch(self.sd_model, samples, target_device=devices.cpu, check_for_nans=True)
 
         self.is_hr_pass = False
@@ -1573,20 +1680,28 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
         if not self.enable_hr:
             return
 
-        if self.hr_prompt == '':
-            self.hr_prompt = self.prompt
-
-        if self.hr_negative_prompt == '':
-            self.hr_negative_prompt = self.negative_prompt
-
+        # Track if hr_prompt is custom (user-specified) or default (blank = same as main prompt)
         if isinstance(self.hr_prompt, list):
+            self.hr_prompt_is_custom = True  # If provided as a list, it's custom
             self.all_hr_prompts = self.hr_prompt
+        elif self.hr_prompt == '':
+            self.hr_prompt = self.prompt
+            self.hr_prompt_is_custom = False
+            self.all_hr_prompts = self.batch_size * self.n_iter * [self.hr_prompt]
         else:
+            self.hr_prompt_is_custom = True
             self.all_hr_prompts = self.batch_size * self.n_iter * [self.hr_prompt]
 
+        # Track if hr_negative_prompt is custom or default
         if isinstance(self.hr_negative_prompt, list):
+            self.hr_negative_prompt_is_custom = True  # If provided as a list, it's custom
             self.all_hr_negative_prompts = self.hr_negative_prompt
+        elif self.hr_negative_prompt == '':
+            self.hr_negative_prompt = self.negative_prompt
+            self.hr_negative_prompt_is_custom = False
+            self.all_hr_negative_prompts = self.batch_size * self.n_iter * [self.hr_negative_prompt]
         else:
+            self.hr_negative_prompt_is_custom = True
             self.all_hr_negative_prompts = self.batch_size * self.n_iter * [self.hr_negative_prompt]
 
         self.all_hr_prompts = [shared.prompt_styles.apply_styles_to_prompt(x, self.styles) for x in self.all_hr_prompts]

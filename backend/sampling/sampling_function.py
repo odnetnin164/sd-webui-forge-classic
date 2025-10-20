@@ -368,7 +368,9 @@ def sampling_function(self, denoiser_params, cond_scale, cond_composition, extra
     return denoised, cond_pred, uncond_pred
 
 
-def sampling_prepare(unet: "UnetPatcher", x: torch.Tensor, *, is_img2img: bool = False):
+def sampling_prepare(unet: "UnetPatcher", x: torch.Tensor, *, is_img2img: bool = False, is_hires: bool = False, timer=None):
+    import time
+
     if is_img2img and dynamic_args.get("kontext", False):
         unet.set_transformer_option("ref_latents", [x.detach().clone()])
     else:
@@ -389,7 +391,32 @@ def sampling_prepare(unet: "UnetPatcher", x: torch.Tensor, *, is_img2img: bool =
         lora_memory = utils.nested_compute_size(unet.lora_patches, element_size=utils.dtype_to_element_size(unet.model.computation_dtype))
         additional_inference_memory += lora_memory
 
+    # Track model loading time separately from actual sampling
+    previous_phase = None
+    if timer is not None:
+        # Save the current phase so we can resume it after model loading
+        previous_phase = timer.current_image_timer.current_phase if hasattr(timer, 'current_image_timer') else None
+
+        # Determine phase name based on sampling context
+        if is_hires:
+            phase_name = 'kmodel_load_hires'
+        elif is_img2img:
+            # img2img is used for hires second pass, but is_hires takes precedence
+            phase_name = 'kmodel_load'
+        else:
+            # Regular txt2img or base pass (detected by checking timer's current phase)
+            if previous_phase == 'sampling_base':
+                phase_name = 'kmodel_load_base'
+            else:
+                phase_name = 'kmodel_load'
+
+        timer.start(phase_name)
+
     memory_management.load_models_gpu(models=[unet] + additional_model_patchers, memory_required=unet_inference_memory, hard_memory_preservation=additional_inference_memory)
+
+    # Resume the previous sampling phase
+    if timer is not None and previous_phase is not None:
+        timer.start(previous_phase)
 
     if unet.has_online_lora():
         utils.nested_move_to_device(unet.lora_patches, device=unet.current_device, dtype=unet.model.computation_dtype)
