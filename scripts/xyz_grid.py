@@ -269,6 +269,7 @@ axis_options = [
     AxisOptionTxt2Img("Hires negative prompt", str, apply_field("hr_negative_prompt")),
     AxisOptionTxt2Img("Hires extra prompt", str, apply_field("hr_extra_prompt")),
     AxisOption("CFG Scale", float, apply_field("cfg_scale")),
+    AxisOptionTxt2Img("Hires CFG Scale", float, apply_field("hr_cfg")),
     AxisOption("Distilled CFG Scale", float, apply_field("distilled_cfg_scale")),
     AxisOptionImg2Img("Image CFG Scale", float, apply_field("image_cfg_scale")),
     AxisOption("Prompt S/R", str, apply_prompt, format_value=format_value),
