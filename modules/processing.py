@@ -1685,9 +1685,15 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
             self.hr_prompt_is_custom = True  # If provided as a list, it's custom
             self.all_hr_prompts = self.hr_prompt
         elif self.hr_prompt == '':
-            self.hr_prompt = self.prompt
-            self.hr_prompt_is_custom = False
-            self.all_hr_prompts = self.batch_size * self.n_iter * [self.hr_prompt]
+            # If self.prompt is a list (e.g., from PromptMatrix), use it directly
+            if isinstance(self.prompt, list):
+                self.hr_prompt = self.prompt[0] if self.prompt else ''
+                self.hr_prompt_is_custom = False
+                self.all_hr_prompts = self.prompt  # Use the entire list
+            else:
+                self.hr_prompt = self.prompt
+                self.hr_prompt_is_custom = False
+                self.all_hr_prompts = self.batch_size * self.n_iter * [self.hr_prompt]
         else:
             self.hr_prompt_is_custom = True
             self.all_hr_prompts = self.batch_size * self.n_iter * [self.hr_prompt]
@@ -1697,9 +1703,15 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
             self.hr_negative_prompt_is_custom = True  # If provided as a list, it's custom
             self.all_hr_negative_prompts = self.hr_negative_prompt
         elif self.hr_negative_prompt == '':
-            self.hr_negative_prompt = self.negative_prompt
-            self.hr_negative_prompt_is_custom = False
-            self.all_hr_negative_prompts = self.batch_size * self.n_iter * [self.hr_negative_prompt]
+            # If self.negative_prompt is a list (e.g., from PromptMatrix), use it directly
+            if isinstance(self.negative_prompt, list):
+                self.hr_negative_prompt = self.negative_prompt[0] if self.negative_prompt else ''
+                self.hr_negative_prompt_is_custom = False
+                self.all_hr_negative_prompts = self.negative_prompt  # Use the entire list
+            else:
+                self.hr_negative_prompt = self.negative_prompt
+                self.hr_negative_prompt_is_custom = False
+                self.all_hr_negative_prompts = self.batch_size * self.n_iter * [self.hr_negative_prompt]
         else:
             self.hr_negative_prompt_is_custom = True
             self.all_hr_negative_prompts = self.batch_size * self.n_iter * [self.hr_negative_prompt]

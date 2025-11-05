@@ -28,6 +28,87 @@ fill_values_symbol = "\U0001f4d2"  # 📒
 AxisInfo = namedtuple('AxisInfo', ['axis', 'values'])
 
 
+def print_xyz_grid_timing_summary(cell_timers, master_timer, x_count, y_count, z_count, x_opt, y_opt, z_opt):
+    """Print timing summary for XYZ grid execution"""
+    if not cell_timers:
+        return
+
+    from collections import defaultdict
+
+    total_cells = len(cell_timers)
+    total_time = master_timer.get_total_time()
+
+    print("\n" + "=" * 70)
+    print(f"[XYZ Grid] COMPLETE - {total_cells} cell(s) in {total_time:.2f}s")
+    print("=" * 70)
+    print(f"[XYZ Grid] Grid size: {x_count} x {y_count} x {z_count}")
+    print(f"[XYZ Grid] Average time per cell: {total_time / total_cells:.2f}s")
+
+    # Aggregate phase timings across all cells
+    aggregate_timings = defaultdict(float)
+    for cell_info in cell_timers:
+        timer = cell_info['timer']
+        for phase, duration in timer.batch_timer.timings.items():
+            aggregate_timings[phase] += duration
+
+    if aggregate_timings:
+        print("\n[XYZ Grid] Aggregate phase timings:")
+        # Use the timer's method to get phases in order
+        phases = cell_timers[0]['timer'].get_phases_in_order(aggregate_timings)
+
+        for phase in phases:
+            duration = aggregate_timings[phase]
+            avg = duration / total_cells
+            pct = (duration / sum(aggregate_timings.values()) * 100) if sum(aggregate_timings.values()) > 0 else 0
+            print(f"  {phase:20s}: {duration:7.2f}s (avg: {avg:5.2f}s per cell, {pct:5.1f}%)")
+
+    # Show timing breakdown by axis if there's variation
+    if x_count > 1 or y_count > 1 or z_count > 1:
+        print("\n[XYZ Grid] Timing by axis:")
+
+        # Group by X axis
+        if x_count > 1:
+            x_timings = defaultdict(list)
+            for cell_info in cell_timers:
+                x_timings[cell_info['ix']].append(cell_info['timer'].get_total_time())
+
+            print(f"\n  {x_opt.label} axis:")
+            for ix in sorted(x_timings.keys()):
+                times = x_timings[ix]
+                avg = sum(times) / len(times) if times else 0
+                print(f"    [{ix}] {x_opt.format_value(None, x_opt, cell_timers[ix]['x']):30s}: {avg:6.2f}s avg ({len(times)} cells)")
+
+        # Group by Y axis
+        if y_count > 1:
+            y_timings = defaultdict(list)
+            for cell_info in cell_timers:
+                y_timings[cell_info['iy']].append(cell_info['timer'].get_total_time())
+
+            print(f"\n  {y_opt.label} axis:")
+            for iy in sorted(y_timings.keys()):
+                times = y_timings[iy]
+                avg = sum(times) / len(times) if times else 0
+                # Find a cell with this iy to get the y value
+                y_val = next(c['y'] for c in cell_timers if c['iy'] == iy)
+                print(f"    [{iy}] {y_opt.format_value(None, y_opt, y_val):30s}: {avg:6.2f}s avg ({len(times)} cells)")
+
+        # Group by Z axis
+        if z_count > 1:
+            z_timings = defaultdict(list)
+            for cell_info in cell_timers:
+                z_timings[cell_info['iz']].append(cell_info['timer'].get_total_time())
+
+            print(f"\n  {z_opt.label} axis:")
+            for iz in sorted(z_timings.keys()):
+                times = z_timings[iz]
+                avg = sum(times) / len(times) if times else 0
+                # Find a cell with this iz to get the z value
+                z_val = next(c['z'] for c in cell_timers if c['iz'] == iz)
+                print(f"    [{iz}] {z_opt.format_value(None, z_opt, z_val):30s}: {avg:6.2f}s avg ({len(times)} cells)")
+
+    print("=" * 70)
+
+
 def apply_field(field):
     def fun(p, x, xs):
         setattr(p, field, x)
@@ -563,10 +644,16 @@ class Script(scripts.Script):
         return [x_type, x_values, x_values_dropdown, y_type, y_values, y_values_dropdown, z_type, z_values, z_values_dropdown, draw_legend, include_lone_images, include_sub_grids, no_fixed_seeds, vary_seeds_x, vary_seeds_y, vary_seeds_z, margin_size, csv_mode]
 
     def run(self, p, x_type, x_values, x_values_dropdown, y_type, y_values, y_values_dropdown, z_type, z_values, z_values_dropdown, draw_legend, include_lone_images, include_sub_grids, no_fixed_seeds, vary_seeds_x, vary_seeds_y, vary_seeds_z, margin_size, csv_mode):
+        from modules.generation_timer import GenerationTimer
+
         x_type, y_type, z_type = x_type or 0, y_type or 0, z_type or 0  # if axle type is None set to 0
 
         if not no_fixed_seeds:
             modules.processing.fix_seed(p)
+
+        # Create a master timer for the entire XYZ grid operation
+        xyz_master_timer = GenerationTimer()
+        xyz_master_timer.start('xyz_grid_total')
 
         if not opts.return_grid:
             p.batch_size = 1
@@ -731,12 +818,21 @@ class Script(scripts.Script):
 
         grid_infotext = [None] * (1 + len(zs))
 
+        # Track all cell timers for aggregate reporting
+        cell_timers = []
+
         def cell(x, y, z, ix, iy, iz):
             if shared.state.interrupted or state.stopping_generation:
                 return Processed(p, [], p.seed, "")
 
             pc = copy(p)
             pc.styles = pc.styles[:]
+
+            # Ensure the copy doesn't share timer reference with original
+            # process_images will create a fresh timer, but we want to be explicit
+            if hasattr(pc, 'timer'):
+                pc.timer = None
+
             x_opt.apply(pc, x, xs)
             y_opt.apply(pc, y, ys)
             z_opt.apply(pc, z, zs)
@@ -753,6 +849,15 @@ class Script(scripts.Script):
 
             try:
                 res = process_images(pc)
+
+                # Capture the timer from this cell for aggregate statistics
+                if hasattr(pc, 'timer') and pc.timer is not None:
+                    cell_timers.append({
+                        'ix': ix, 'iy': iy, 'iz': iz,
+                        'x': x, 'y': y, 'z': z,
+                        'timer': pc.timer
+                    })
+
             except Exception as e:
                 errors.display(e, "generating image for xyz plot")
 
@@ -843,5 +948,9 @@ class Script(scripts.Script):
                 del processed.all_prompts[1]
                 del processed.all_seeds[1]
                 del processed.infotexts[1]
+
+        # Stop the master timer and print XYZ grid timing summary
+        xyz_master_timer.stop()
+        print_xyz_grid_timing_summary(cell_timers, xyz_master_timer, len(xs), len(ys), len(zs), x_opt, y_opt, z_opt)
 
         return processed
