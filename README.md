@@ -22,31 +22,52 @@ The name "Forge" is inspired by "Minecraft Forge". This project aims to become t
 
 <br>
 
-## Features [Sep. 24]
+## Features [Nov]
 > Most base features of the original [Automatic1111 Webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui) should still function
 
 #### New Features
 
+> [!Tip]
+> [Download Models](https://github.com/Haoming02/sd-webui-forge-classic/wiki/Download-Models)
+
+- [X] Support [Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo)
 - [X] Support [Wan 2.2](https://github.com/Wan-Video/Wan2.2)
     - `txt2img`, `img2img`, `txt2vid`, `img2vid`
+    - use `Refiner` to achieve **High Noise** / **Low Noise** switching
+        - enable `Refiner` in **Settings/Refiner**
 
 > [!Important]
 > To export a video, you need to have **[FFmpeg](https://ffmpeg.org/)** installed
 
-- [X] Support [Qwen-Image](https://github.com/QwenLM/Qwen-Image)
-    - **not** `qwen-image-edit`
-- [X] Support [Nunchaku](https://github.com/nunchaku-tech/nunchaku) (`SVDQ`) Models
-    - `dev`, `krea`, `kontext`, `qwen-image`, `t5`
+- [X] Support [Qwen-Image](https://huggingface.co/Qwen/Qwen-Image)
+- [X] Support [Qwen-Image-Edit](https://huggingface.co/Qwen/Qwen-Image-Edit-2509)
+    - `img2img`, `inpaint`
+
+> [!Note]
+> Since the layers between **Qwen-Image** and **Qwen-Image-Edit** are exactly the same, to be properly detected as an **Edit** model, the model needs to include "`qwen`" and "`edit`" in its path, either the file name or folder name.
+
 - [X] Support [Flux Kontext](https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev)
     - `img2img`, `inpaint`
 
 > [!Note]
-> Since the `state_dict` between **Flux-Dev**, **Flux-Krea**, and **Flux-Kontext** are exactly the same, to be properly detected as a **Kontext** model, the model needs to include "`kontext`" in its path, either the file or folder name.
+> Since the layers between **Flux-Dev**, **Flux-Krea**, and **Flux-Kontext** are exactly the same, to be properly detected as a **Kontext** model, the model needs to include "`kontext`" in its path, either the file name or folder name.
 
+- [X] Support Multi-Image Inputs for **Qwen-Image-Edit** and **Flux-Kontext**
+- [X] Support [Nunchaku](https://github.com/nunchaku-tech/nunchaku) (`SVDQ`) Models
+    - `flux-dev`, `flux-krea`, `flux-kontext`, `qwen-image`, `qwen-image-edit`, `t5`
+    - support LoRAs
+- [X] Support [Lumina-Image-2.0](https://huggingface.co/Alpha-VLLM/Lumina-Image-2.0)
+    - `Neta-Lumina`, `NetaYume-Lumina`
 - [X] Support [Chroma](https://huggingface.co/lodestones/Chroma)
     - special thanks: [@croquelois](https://github.com/lllyasviel/stable-diffusion-webui-forge/pull/2925)
+
+> [!Tip]
+> Check out [Inference References](https://github.com/Haoming02/sd-webui-forge-classic/wiki/Inference-References) for how to use each model and the recommended parameters
+
+<br>
+
 - [X] Rewrite Preset System
-    - now actually remember the checkpoint/modules selections for each preset
+    - now actually remembers the checkpoint/module selection and parameters for each preset
 - [X] Support [uv](https://github.com/astral-sh/uv) package manager
     - requires **manually** installing [uv](https://github.com/astral-sh/uv/releases)
     - drastically speed up installation
@@ -59,6 +80,8 @@ The name "Forge" is inspired by "Minecraft Forge". This project aims to become t
 - [X] Implement MaHiRo
     - alternative CFG calculation; improve prompt adherence
     - enable in **Settings/UI Alternatives**
+- [X] Implement [Epsilon Scaling](https://github.com/comfyanonymous/ComfyUI/pull/10132)
+    - enable in **Settings/Stable Diffusion**
 - [X] Support loading upscalers in `half` precision
     - speed up; reduce quality
     - enable in **Settings/Upscaling**
@@ -68,11 +91,6 @@ The name "Forge" is inspired by "Minecraft Forge". This project aims to become t
     - support new Upscaler architectures
 - [X] Add `pillow-heif` package
     - support `.avif` and `.heif` images
-
-#### TODO
-
-- [ ] Improve Memory Management during Generation
-    - currently, even when using the same models you could run in [ComfyUI](https://github.com/comfyanonymous/ComfyUI), you might still get **Out of Memory** error...
 
 #### Removed Features
 
@@ -93,6 +111,7 @@ The name "Forge" is inspired by "Minecraft Forge". This project aims to become t
 #### Optimizations
 
 - [X] No longer `git` `clone` any repository on fresh install
+- [X] Fix memory leak when switching checkpoints
 - [X] Remove unused `cmd_args`
 - [X] Remove unused `args_parser`
 - [X] Remove unused `shared_options`
@@ -101,27 +120,34 @@ The name "Forge" is inspired by "Minecraft Forge". This project aims to become t
 - [X] Remove redundant upscaler codes
     - put every upscaler inside the `ESRGAN` folder
 - [X] Improve `ForgeCanvas`
-    - hotkeys
     - brush adjustments
+    - customization
     - deobfuscate
+    - eraser
+    - hotkeys
 - [X] Optimize upscaler logics
 - [X] Optimize certain operations in `Spandrel`
+- [X] Improve memory management
 - [X] Improve color correction
+- [X] Update the implementation for `uni_pc` and `LCM` samplers
 - [X] Revamp settings
     - improve formatting
     - update descriptions
 - [X] Check for Extension updates in parallel
 - [X] Move `embeddings` folder into `models` folder
+- [X] ControlNet Rewrite
+    - change Units to `gr.Tab`
+    - remove multi-inputs, as they are "[misleading](https://github.com/lllyasviel/stable-diffusion-webui-forge/discussions/932)"
 - [X] Disable Refiner by default
-    - enable again in **Settings/UI Alternatives**
+    - enable again in **Settings/Refiner**
 - [X] Lint & Format
 - [X] Update `Pillow`
     - faster image processing
 - [X] Update `protobuf`
     - faster `insightface` loading
 - [X] Update to latest PyTorch
-    - `torch==2.8.0+cu128`
-    - `xformers==0.0.32`
+    - `torch==2.9.1+cu128`
+    - `xformers==0.0.33`
 
 > [!Note]
 > If your GPU does not support the latest PyTorch, manually [install](#install-older-pytorch) older version of PyTorch
@@ -193,6 +219,23 @@ The name "Forge" is inspired by "Minecraft Forge". This project aims to become t
 - `--flash`: Install the `flash_attn` package to speed up generation
 - `--fast-fp16`: Enable the `allow_fp16_accumulation` option
     - requires PyTorch **2.7.0** +
+
+<details>
+<summary>with SageAttention 2</summary>
+
+- `--sage2-function`: Select the function used by **SageAttention 2**
+    - **options:**
+        - `auto` (default)
+        - `fp16_triton`
+        - `fp16_cuda`
+        - `fp8_cuda`
+
+- If you are getting `NaN` errors, try:
+```bash
+--sage2-function fp16_cuda --sage-quant-gran per_warp --sage-accum-dtype fp16+fp32
+```
+
+</details>
 
 <br>
 
@@ -337,16 +380,13 @@ In my experience, the speed of each attention function for SDXL is ranked in the
 > [!Note]
 > `SageAttention` is based on quantization, so its quality might be slightly worse than others
 
-> [!Important]
-> When using `SageAttention 2`, both positive prompts and negative prompts are required; omitting negative prompts can cause `NaN` issues
-
 <br>
 
 ## Issues & Requests
 
 - **Issues** about removed features will simply be ignored
 - **Issues** regarding installation will be ignored if it's obviously user-error
-- Non-Windows platforms will not be supported, as I cannot verify nor maintain them
+- Non-Windows platforms will not be officially supported, as I cannot verify nor maintain them
 
 </details>
 

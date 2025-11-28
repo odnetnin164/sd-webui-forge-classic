@@ -1,3 +1,5 @@
+# https://github.com/comfyanonymous/ComfyUI/blob/v0.3.64/comfy/text_encoders/qwen_vl.py
+
 import math
 from typing import Optional, Tuple
 
@@ -5,7 +7,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from backend.attention import attention_function
+from backend.memory_management import (
+    is_device_cpu,
+    text_encoder_device,
+    xformers_enabled,
+)
+
+if xformers_enabled() and not is_device_cpu(text_encoder_device()):
+    from backend.attention import attention_xformers as attention_function
+else:
+    from backend.attention import attention_pytorch as attention_function
 
 
 def process_qwen2vl_images(

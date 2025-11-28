@@ -337,8 +337,7 @@ def sampling_function(self, denoiser_params, cond_scale, cond_composition, extra
     timestep = denoiser_params.sigma
     uncond = compile_conditions(denoiser_params.text_uncond)
     cond = compile_weighted_conditions(denoiser_params.text_cond, cond_composition)
-    model_options = (unet_patcher.model_options or {}).copy()
-    model_options.update(extra_model_options or {})
+    model_options = utils.join_dicts(unet_patcher.model_options, extra_model_options)
     seed = self.p.seeds[0]
 
     if extra_concat_condition is not None:
@@ -346,7 +345,7 @@ def sampling_function(self, denoiser_params, cond_scale, cond_composition, extra
     else:
         image_cond_in = denoiser_params.image_cond
 
-    if isinstance(image_cond_in, torch.Tensor):
+    if isinstance(image_cond_in, torch.Tensor) and self.inner_model.inner_model.is_inpaint:
         if image_cond_in.shape[0] == x.shape[0] and image_cond_in.shape[2] == x.shape[2] and image_cond_in.shape[3] == x.shape[3]:
             if uncond is not None:
                 for i in range(len(uncond)):
@@ -375,6 +374,7 @@ def sampling_prepare(unet: "UnetPatcher", x: torch.Tensor, *, is_img2img: bool =
         unet.set_transformer_option("ref_latents", [x.detach().clone()])
     else:
         unet.set_transformer_option("ref_latents", None)
+
 
     shape = list(x.shape)
     mem_shape = [2 * shape[0]] + shape[1:]

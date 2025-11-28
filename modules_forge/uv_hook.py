@@ -1,5 +1,6 @@
 import shlex
 import subprocess
+from copy import copy
 from functools import wraps
 
 
@@ -8,9 +9,13 @@ def patch(symlink: bool):
         return
 
     subprocess.__original_run = subprocess.run
+    BAD_FLAGS = ("--prefer-binary", "--ignore-installed", "-I")
 
     @wraps(subprocess.__original_run)
     def patched_run(*args, **kwargs):
+        _original_args = copy(args)
+        _original_kwargs = copy(kwargs)
+
         if args:
             command, *_args = args
         else:
@@ -24,11 +29,10 @@ def patch(symlink: bool):
         assert isinstance(command, list)
 
         if "pip" not in command:
-            return subprocess.__original_run([*command, *_args], **kwargs)
+            return subprocess.__original_run(*_original_args, **_original_kwargs)
 
         cmd = command[command.index("pip") + 1 :]
 
-        BAD_FLAGS = ("--prefer-binary", "--ignore-installed", "-I")
         cmd = [arg for arg in cmd if arg not in BAD_FLAGS]
 
         modified_command: list[str] = ["uv", "pip", *cmd]
@@ -36,6 +40,10 @@ def patch(symlink: bool):
         if symlink:
             modified_command.extend(["--link-mode", "symlink"])
 
-        return subprocess.__original_run(shlex.join([*modified_command, *_args]), **kwargs)
+        command = [*modified_command, *_args]
+        if kwargs.get("shell", False):
+            command = shlex.join(command).replace("'", '"')
+
+        return subprocess.__original_run(command, **kwargs)
 
     subprocess.run = patched_run

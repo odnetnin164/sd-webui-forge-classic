@@ -41,6 +41,7 @@ class ForgeCanvas {
         scribbleColorFixed = false,
         scribbleWidth = 20,
         scribbleWidthFixed = false,
+        scribbleWidthConsistent = false,
         scribbleAlpha = 100,
         scribbleAlphaFixed = false,
         scribbleSoftness = 0,
@@ -63,7 +64,6 @@ class ForgeCanvas {
 
         this.dragging = false;
         this.dragged_just_now = false;
-        this.resizing = false;
         this.drawing = false;
         this.contrast_pattern = null;
 
@@ -71,6 +71,7 @@ class ForgeCanvas {
         this.scribbleColorFixed = scribbleColorFixed;
         this.scribbleWidth = scribbleWidth;
         this.scribbleWidthFixed = scribbleWidthFixed;
+        this.scribbleWidthConsistent = scribbleWidthConsistent;
         this.scribbleAlpha = scribbleAlpha;
         this.scribbleAlphaFixed = scribbleAlphaFixed;
         this.scribbleSoftness = scribbleSoftness;
@@ -92,6 +93,8 @@ class ForgeCanvas {
         this._held_W = false;
         this._held_A = false;
         this._held_S = false;
+
+        this._original_alpha = null;
     }
 
     init() {
@@ -156,6 +159,7 @@ class ForgeCanvas {
 
         if (self.no_scribbles) {
             toolbar.querySelector(".forge-toolbar-box-b").style.display = "none";
+            toolbar.removeAttribute("title");
             resetButton.style.display = "none";
             undoButton.style.display = "none";
             redoButton.style.display = "none";
@@ -183,7 +187,7 @@ class ForgeCanvas {
         }
 
         function resetScribble(e, rect) {
-            const indicatorSize = self.scribbleWidth * self.imgScale * 4;
+            const indicatorSize = self.scribbleWidth * (self.scribbleWidthConsistent ? 1.0 : self.imgScale) * 4;
             scribbleIndicator.style.width = `${indicatorSize}px`;
             scribbleIndicator.style.height = `${indicatorSize}px`;
             scribbleIndicator.style.left = `${e.clientX - rect.left - indicatorSize / 2}px`;
@@ -235,7 +239,7 @@ class ForgeCanvas {
         scribbleWidth.addEventListener("input", (e) => {
             self.scribbleWidth = e.target.value;
             scribbleWidthLabel.textContent = `Brush Width (${self.scribbleWidth})`;
-            const indicatorSize = self.scribbleWidth * self.imgScale * 4;
+            const indicatorSize = self.scribbleWidth * (self.scribbleWidthConsistent ? 1.0 : self.imgScale) * 4;
             scribbleIndicator.style.width = `${indicatorSize}px`;
             scribbleIndicator.style.height = `${indicatorSize}px`;
         });
@@ -370,42 +374,12 @@ class ForgeCanvas {
             return false;
         });
 
-        container.addEventListener("pointerover", () => {
-            toolbar.style.opacity = "1";
-            if (!self.img && !self.no_upload) container.style.cursor = "pointer";
-        });
-
         container.addEventListener("dragleave", () => {
             toolbar.style.opacity = "0";
             imageContainer.style.cursor = "";
             drawingCanvas.style.cursor = "";
             container.style.cursor = "";
             scribbleIndicator.style.display = "none";
-        });
-
-        const resizeLine = document.getElementById(`resizeLine_${self.uuid}`);
-        resizeLine.addEventListener("pointerdown", (e) => {
-            self.resizing = true;
-            e.preventDefault();
-            e.stopPropagation();
-        });
-
-        document.addEventListener("pointermove", (e) => {
-            if (self.resizing) {
-                const rect = container.getBoundingClientRect();
-                const newHeight = e.clientY - rect.top;
-                container.style.height = `${newHeight}px`;
-                e.preventDefault();
-                e.stopPropagation();
-            }
-        });
-
-        document.addEventListener("pointerup", () => {
-            self.resizing = false;
-        });
-
-        document.addEventListener("pointerout", () => {
-            self.resizing = false;
         });
 
         function preventDefaults(e) {
@@ -437,10 +411,13 @@ class ForgeCanvas {
 
         container.addEventListener("pointerenter", () => {
             self.pointerInsideContainer = true;
+            toolbar.style.opacity = "1";
+            if (!self.img && !self.no_upload) container.style.cursor = "pointer";
         });
 
         container.addEventListener("pointerleave", () => {
             self.pointerInsideContainer = false;
+            toolbar.style.opacity = "0";
         });
 
         document.addEventListener("paste", (e) => {
@@ -449,6 +426,15 @@ class ForgeCanvas {
 
         document.addEventListener("keydown", (e) => {
             if (!self.pointerInsideContainer) return;
+            if (e.shiftKey) {
+                e.preventDefault();
+                if (this._original_alpha === null)
+                    this._original_alpha = scribbleAlpha.value;
+                scribbleAlpha.value = 0.0;
+                updateInput(scribbleAlpha);
+                scribbleIndicator.style.border = "2px dotted";
+                return;
+            }
             if (e.ctrlKey && e.key === "z") {
                 e.preventDefault();
                 this.undo();
@@ -483,6 +469,13 @@ class ForgeCanvas {
             this._held_W = false;
             this._held_A = false;
             this._held_S = false;
+
+            if (this._original_alpha !== null) {
+                scribbleAlpha.value = this._original_alpha;
+                this._original_alpha = null;
+                updateInput(scribbleAlpha);
+                scribbleIndicator.style.border = "1px solid";
+            }
         });
 
         maxButton.addEventListener("click", () => {
@@ -522,7 +515,7 @@ class ForgeCanvas {
 
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
-        ctx.lineWidth = this.scribbleWidth * 4;
+        ctx.lineWidth = this.scribbleWidth / (this.scribbleWidthConsistent ? this.imgScale : 1.0) * 4;
 
         if (this.contrast_scribbles) {
             ctx.strokeStyle = this.contrast_pattern;

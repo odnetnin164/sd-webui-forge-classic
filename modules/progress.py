@@ -1,18 +1,18 @@
 from __future__ import annotations
+
 import base64
 import io
+import random
+import string
 import time
+from collections import OrderedDict
+from typing import List
 
 import gradio as gr
 from pydantic import BaseModel, Field
 
-from modules.shared import opts
-
 import modules.shared as shared
-from collections import OrderedDict
-import string
-import random
-from typing import List
+from modules.shared import opts
 
 current_task = None
 pending_tasks = OrderedDict()
@@ -38,11 +38,12 @@ def finish_task(id_task):
     if len(finished_tasks) > 16:
         finished_tasks.pop(0)
 
+
 def create_task_id(task_type):
     N = 7
-    res = ''.join(random.choices(string.ascii_uppercase +
-    string.digits, k=N))
+    res = "".join(random.choices(string.ascii_uppercase + string.digits, k=N))
     return f"task({task_type}-{res})"
+
 
 def record_results(id_task, res):
     recorded_results.append((id_task, res))
@@ -53,9 +54,11 @@ def record_results(id_task, res):
 def add_task_to_queue(id_job):
     pending_tasks[id_job] = time.time()
 
+
 class PendingTasksResponse(BaseModel):
     size: int = Field(title="Pending task size")
     tasks: List[str] = Field(title="Pending task ids")
+
 
 class ProgressRequest(BaseModel):
     id_task: str = Field(default=None, title="Task ID", description="id of the task to get progress for")
@@ -132,10 +135,11 @@ def progressapi(req: ProgressRequest):
                         save_kwargs = {"optimize": False, "compress_level": 1}
 
                 else:
+                    image = image.convert("RGB")
                     save_kwargs = {}
 
                 image.save(buffered, format=opts.live_previews_image_format, **save_kwargs)
-                base64_image = base64.b64encode(buffered.getvalue()).decode('ascii')
+                base64_image = base64.b64encode(buffered.getvalue()).decode("ascii")
                 live_preview = f"data:image/{opts.live_previews_image_format};base64,{base64_image}"
                 id_live_preview = shared.state.id_live_preview
 
@@ -150,4 +154,4 @@ def restore_progress(id_task):
     if res is not None:
         return res
 
-    return gr.update(), gr.update(), gr.update(), f"Couldn't restore progress for {id_task}: results either have been discarded or never were obtained"
+    return gr.skip(), gr.skip(), gr.skip(), f"Couldn't restore progress for {id_task}: results either have been discarded or never were obtained"

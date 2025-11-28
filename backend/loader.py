@@ -11,10 +11,12 @@ import backend.args
 from backend import memory_management
 from backend.diffusion_engine.chroma import Chroma
 from backend.diffusion_engine.flux import Flux
+from backend.diffusion_engine.lumina import Lumina2
 from backend.diffusion_engine.qwen import QwenImage
 from backend.diffusion_engine.sd15 import StableDiffusion
 from backend.diffusion_engine.sdxl import StableDiffusionXL, StableDiffusionXLRefiner
 from backend.diffusion_engine.wan import Wan
+from backend.diffusion_engine.zimage import ZImage
 from backend.nn.clip import IntegratedCLIP
 from backend.nn.unet import IntegratedUNet2DConditionModel
 from backend.nn.vae import IntegratedAutoencoderKL
@@ -27,7 +29,7 @@ from backend.utils import (
     read_arbitrary_config,
 )
 
-possible_models = [StableDiffusion, StableDiffusionXLRefiner, StableDiffusionXL, Chroma, Flux, Wan, QwenImage]
+possible_models = [StableDiffusion, StableDiffusionXLRefiner, StableDiffusionXL, Chroma, Flux, Wan, QwenImage, Lumina2, ZImage]
 
 
 logging.getLogger("diffusers").setLevel(logging.ERROR)
@@ -119,17 +121,82 @@ def load_huggingface_component(guess, component_name, lib_name, cls_name, repo_p
             load_state_dict(model, state_dict, log_name=cls_name, ignore_errors=["lm_head.weight"])
 
             return model
+        if cls_name == "Gemma2Model":
+            assert isinstance(state_dict, dict) and len(state_dict) > 16, "You do not have Gemma2 state dict!"
+
+            from backend.nn.llm.llama import Gemma2_2B
+
+            config = read_arbitrary_config(config_path)
+
+            storage_dtype = memory_management.text_encoder_dtype()
+            state_dict_dtype = memory_management.state_dict_dtype(state_dict)
+
+            if state_dict_dtype in [torch.float8_e4m3fn, torch.float8_e5m2, "nf4", "fp4", "gguf"]:
+                print(f"Using Detected Gemma2 Data Type: {state_dict_dtype}")
+                storage_dtype = state_dict_dtype
+                if state_dict_dtype in ["nf4", "fp4", "gguf"]:
+                    print("Using pre-quant state dict!")
+                    if state_dict_dtype in ["gguf"]:
+                        beautiful_print_gguf_state_dict_statics(state_dict)
+            else:
+                print(f"Using Default Gemma2 Data Type: {storage_dtype}")
+
+            if storage_dtype in ["nf4", "fp4", "gguf"]:
+                with modeling_utils.no_init_weights():
+                    with using_forge_operations(device=memory_management.cpu, dtype=memory_management.text_encoder_dtype(), manual_cast_enabled=False, bnb_dtype=storage_dtype):
+                        model = Gemma2_2B(config)
+            else:
+                with modeling_utils.no_init_weights():
+                    with using_forge_operations(device=memory_management.cpu, dtype=storage_dtype, manual_cast_enabled=True):
+                        model = Gemma2_2B(config)
+
+            load_state_dict(model, state_dict, log_name=cls_name, ignore_errors=[])
+
+            return model
+        if cls_name == "Qwen3Model":
+            assert isinstance(state_dict, dict) and len(state_dict) > 16, "You do not have Qwen3 state dict!"
+
+            from backend.nn.llm.llama import Qwen3_4B
+
+            config = read_arbitrary_config(config_path)
+
+            storage_dtype = memory_management.text_encoder_dtype()
+            state_dict_dtype = memory_management.state_dict_dtype(state_dict)
+
+            if state_dict_dtype in [torch.float8_e4m3fn, torch.float8_e5m2, "nf4", "fp4", "gguf"]:
+                print(f"Using Detected Qwen3 Data Type: {state_dict_dtype}")
+                storage_dtype = state_dict_dtype
+                if state_dict_dtype in ["nf4", "fp4", "gguf"]:
+                    print("Using pre-quant state dict!")
+                    if state_dict_dtype in ["gguf"]:
+                        beautiful_print_gguf_state_dict_statics(state_dict)
+            else:
+                print(f"Using Default Qwen3 Data Type: {storage_dtype}")
+
+            if storage_dtype in ["nf4", "fp4", "gguf"]:
+                with modeling_utils.no_init_weights():
+                    with using_forge_operations(device=memory_management.cpu, dtype=memory_management.text_encoder_dtype(), manual_cast_enabled=False, bnb_dtype=storage_dtype):
+                        model = Qwen3_4B(config)
+            else:
+                with modeling_utils.no_init_weights():
+                    with using_forge_operations(device=memory_management.cpu, dtype=storage_dtype, manual_cast_enabled=True):
+                        model = Qwen3_4B(config)
+
+            load_state_dict(model, state_dict, log_name=cls_name, ignore_errors=[])
+
+            return model
         if cls_name in ["T5EncoderModel", "UMT5EncoderModel"]:
+            assert isinstance(state_dict, dict) and len(state_dict) > 16, "You do not have T5 state dict!"
+
             if filename := state_dict.get("transformer.filename", None):
                 if memory_management.is_device_cpu(memory_management.text_encoder_device()):
                     raise SystemError("nunchaku T5 does not support CPU!")
 
                 from backend.nn.svdq import SVDQT5
 
+                print("Using Nunchaku T5")
                 model = SVDQT5(filename)
                 return model
-
-            assert isinstance(state_dict, dict) and len(state_dict) > 16, "You do not have T5 state dict!"
 
             from backend.nn.t5 import IntegratedT5
 
@@ -160,7 +227,7 @@ def load_huggingface_component(guess, component_name, lib_name, cls_name, repo_p
             load_state_dict(model, state_dict, log_name=cls_name, ignore_errors=["transformer.encoder.embed_tokens.weight", "logit_scale"])
 
             return model
-        if cls_name in ["UNet2DConditionModel", "FluxTransformer2DModel", "ChromaTransformer2DModel", "WanTransformer3DModel", "QwenImageTransformer2DModel"]:
+        if cls_name in ["UNet2DConditionModel", "FluxTransformer2DModel", "ChromaTransformer2DModel", "WanTransformer3DModel", "QwenImageTransformer2DModel", "Lumina2Transformer2DModel", "ZImageTransformer2DModel"]:
             assert isinstance(state_dict, dict) and len(state_dict) > 16, "You do not have model state dict!"
 
             model_loader = None
@@ -192,6 +259,10 @@ def load_huggingface_component(guess, component_name, lib_name, cls_name, repo_p
                     from backend.nn.qwen import QwenImageTransformer2DModel
 
                     model_loader = lambda c: QwenImageTransformer2DModel(**c)
+            elif cls_name in ("Lumina2Transformer2DModel", "ZImageTransformer2DModel"):
+                from backend.nn.lumina import NextDiT
+
+                model_loader = lambda c: NextDiT(**c)
 
             unet_config = guess.unet_config.copy()
             state_dict_parameters = memory_management.state_dict_parameters(state_dict)
@@ -281,6 +352,9 @@ def replace_state_dict(sd: dict[str, torch.Tensor], asd: dict[str, torch.Tensor]
         gguf_llm_format = {  # city96
             "blk.": "model.layers.",
             "attn_norm": "input_layernorm",
+            "attn_q_norm.": "self_attn.q_norm.",
+            "attn_k_norm.": "self_attn.k_norm.",
+            "attn_v_norm.": "self_attn.v_norm.",
             "attn_q": "self_attn.q_proj",
             "attn_k": "self_attn.k_proj",
             "attn_v": "self_attn.v_proj",
@@ -491,11 +565,23 @@ def replace_state_dict(sd: dict[str, torch.Tensor], asd: dict[str, torch.Tensor]
             sd[f"{text_encoder_key_prefix}t5xxl.transformer.{k}"] = True
         sd[f"{text_encoder_key_prefix}t5xxl.transformer.filename"] = str(path)
 
-    if "model.layers.0.self_attn.k_proj.bias" in asd:
+    if "model.layers.0.post_feedforward_layernorm.weight" in asd:
+        assert "model.layers.0.self_attn.q_norm.weight" not in asd
+        for k, v in asd.items():
+            if k == "spiece_model":
+                continue
+            sd[f"{text_encoder_key_prefix}gemma2_2b.{k}"] = v
+
+    elif "model.layers.0.self_attn.k_proj.bias" in asd:
         weight = asd["model.layers.0.self_attn.k_proj.bias"]
         assert weight.shape[0] == 512
         for k, v in asd.items():
-            sd[f"{text_encoder_key_prefix}qwen25.{k}"] = v
+            sd[f"{text_encoder_key_prefix}qwen25_7b.{k}"] = v
+
+    elif "model.layers.0.post_attention_layernorm.weight" in asd:
+        assert "model.layers.0.self_attn.q_norm.weight" in asd
+        for k, v in asd.items():
+            sd[f"{text_encoder_key_prefix}qwen3_4b.transformer.{k}"] = v
 
     return sd
 
@@ -566,6 +652,7 @@ def forge_loader(sd: os.PathLike, additional_state_dicts: list[os.PathLike] = No
 
     repo_name = estimated_config.huggingface_repo
     backend.args.dynamic_args["kontext"] = "kontext" in str(sd).lower()
+    backend.args.dynamic_args["edit"] = "qwen" in str(sd).lower() and "edit" in str(sd).lower()
     backend.args.dynamic_args["nunchaku"] = getattr(estimated_config, "nunchaku", False)
 
     if getattr(estimated_config, "nunchaku", False):
@@ -601,11 +688,11 @@ def forge_loader(sd: os.PathLike, additional_state_dicts: list[os.PathLike] = No
     except ImportError:
         pass
 
-    # Fix Huggingface prediction type using .yaml config or estimated config detection
     prediction_types = {
         "EPS": "epsilon",
         "V_PREDICTION": "v_prediction",
-        "EDM": "edm",
+        "FLUX": "const",
+        "FLOW": "const",
     }
 
     has_prediction_type = "scheduler" in huggingface_components and hasattr(huggingface_components["scheduler"], "config") and "prediction_type" in huggingface_components["scheduler"].config
@@ -625,7 +712,7 @@ def forge_loader(sd: os.PathLike, additional_state_dicts: list[os.PathLike] = No
             huggingface_components["scheduler"].config.prediction_type = prediction_types.get(estimated_config.model_type.name, huggingface_components["scheduler"].config.prediction_type)
 
     for M in possible_models:
-        if any(isinstance(estimated_config, x) for x in M.matched_guesses):
+        if any(type(estimated_config) is x for x in M.matched_guesses):
             return M(estimated_config=estimated_config, huggingface_components=huggingface_components)
 
     print("Failed to recognize model type!")

@@ -27,7 +27,7 @@ def read_arbitrary_config(directory):
 
 
 def load_torch_file(ckpt: str, safe_load=False, device=None, *, return_metadata=False):
-    """https://github.com/comfyanonymous/ComfyUI/blob/v0.3.62/comfy/utils.py#L53"""
+    """https://github.com/comfyanonymous/ComfyUI/blob/v0.3.64/comfy/utils.py#L53"""
     if device is None:
         device = torch.device("cpu")
 
@@ -137,7 +137,7 @@ def tensor2parameter(x):
 
 def fp16_fix(x):
     # avoid fp16 overflow
-    # https://github.com/comfyanonymous/ComfyUI/blob/v0.3.62/comfy/ldm/chroma/layers.py#L111
+    # https://github.com/comfyanonymous/ComfyUI/blob/v0.3.64/comfy/ldm/chroma/layers.py#L111
 
     if x.dtype == torch.float16:
         return torch.nan_to_num(x, nan=0.0, posinf=65504, neginf=-65504)
@@ -208,7 +208,7 @@ def beautiful_print_gguf_state_dict_statics(state_dict):
 
 
 def pad_to_patch_size(img, patch_size=(2, 2), padding_mode="circular"):
-    """https://github.com/comfyanonymous/ComfyUI/blob/v0.3.45/comfy/ldm/common_dit.py#L5"""
+    """https://github.com/comfyanonymous/ComfyUI/blob/v0.3.64/comfy/ldm/common_dit.py#L5"""
     if padding_mode == "circular" and (torch.jit.is_tracing() or torch.jit.is_scripting()):
         padding_mode = "reflect"
 
@@ -220,9 +220,9 @@ def pad_to_patch_size(img, patch_size=(2, 2), padding_mode="circular"):
 
 
 def process_img(x, index=0, h_offset=0, w_offset=0):
-    """https://github.com/comfyanonymous/ComfyUI/blob/v0.3.45/comfy/ldm/flux/model.py#L198"""
+    """https://github.com/comfyanonymous/ComfyUI/blob/v0.3.64/comfy/ldm/flux/model.py#L213"""
     bs, c, h, w = x.shape
-    patch_size = 2  # TODO
+    patch_size = 2
     x = pad_to_patch_size(x, (patch_size, patch_size))
 
     img = rearrange(x, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=patch_size, pw=patch_size)
@@ -237,3 +237,20 @@ def process_img(x, index=0, h_offset=0, w_offset=0):
     img_ids[:, :, 1] = img_ids[:, :, 1] + torch.linspace(h_offset, h_len - 1 + h_offset, steps=h_len, device=x.device, dtype=x.dtype).unsqueeze(1)
     img_ids[:, :, 2] = img_ids[:, :, 2] + torch.linspace(w_offset, w_len - 1 + w_offset, steps=w_len, device=x.device, dtype=x.dtype).unsqueeze(0)
     return img, repeat(img_ids, "h w c -> b (h w) c", b=bs)
+
+
+def join_dicts(base_dict: dict | None, update_dict: dict | None) -> dict:
+    if not update_dict:
+        return (base_dict or {}).copy()
+
+    result = (base_dict or {}).copy()
+
+    for key, value in update_dict.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = join_dicts(result[key], value)
+        elif key in result and isinstance(result[key], list) and isinstance(value, list):
+            result[key] = result[key] + value
+        else:
+            result[key] = value
+
+    return result

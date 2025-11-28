@@ -123,5 +123,23 @@ parser.add_argument("--sage-accum-dtype", type=Sage_pv_accum_dtype, default=Sage
 
 args, _ = parser.parse_known_args()
 
-dynamic_args = dict(embedding_dir="./embeddings", emphasis_name="original")
-"""Some parameters that are changed by the Webui"""
+# TODO: Stop using this to hack every problem...
+dynamic_args = dict(
+    embedding_dir=None,
+    forge_unet_storage_dtype=None,
+    kontext=False,
+    edit=False,
+    nunchaku=False,
+    ref_latents=[],
+    concat_latent=None,
+)
+"""
+Some parameters that are used throughout the Webui
+- embedding_dir: `str` - set in modules/sd_models/forge_model_reload
+- forge_unet_storage_dtype: `torch.dtype` - set in modules/sd_models/forge_model_reload
+- kontext: `bool` - Flux Kontext
+- edit: `bool` - Qwen-Image-Edit
+- nunchaku: `bool` - Nunchaku (SVDQ) Models
+- ref_latents: `list[torch.Tensor]` - Reference Latent(s) for Flux Kontext & Qwen-Image-Edit
+- concat_latent: `torch.Tensor` - Input Latent for Wan 2.2 I2V
+"""

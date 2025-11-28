@@ -2,6 +2,8 @@ import k_diffusion.sampling
 import torch
 import tqdm
 
+from modules.uni_pc import uni_pc as unipc_impl
+
 
 @torch.no_grad()
 def restart_sampler(model, x, sigmas, extra_args=None, callback=None, disable=None, s_noise=1.0, restart_list=None):
@@ -72,4 +74,56 @@ def restart_sampler(model, x, sigmas, extra_args=None, callback=None, disable=No
         x = heun_step(x, old_sigma, new_sigma)
         last_sigma = new_sigma
 
+    return x
+
+
+class SigmaConvert:
+    schedule = ""
+
+    def marginal_log_mean_coeff(self, sigma):
+        return 0.5 * torch.log(1 / ((sigma * sigma) + 1))
+
+    def marginal_alpha(self, t):
+        return torch.exp(self.marginal_log_mean_coeff(t))
+
+    def marginal_std(self, t):
+        return torch.sqrt(1.0 - torch.exp(2.0 * self.marginal_log_mean_coeff(t)))
+
+    def marginal_lambda(self, t):
+        """
+        Compute lambda_t = log(alpha_t) - log(sigma_t) of a given continuous-time label t in [0, T]
+        """
+        log_mean_coeff = self.marginal_log_mean_coeff(t)
+        log_std = 0.5 * torch.log(1.0 - torch.exp(2.0 * log_mean_coeff))
+        return log_mean_coeff - log_std
+
+
+def predict_eps_sigma(model, input, sigma_in, **kwargs):
+    sigma = sigma_in.view(sigma_in.shape[:1] + (1,) * (input.ndim - 1))
+    input = input * ((sigma**2 + 1.0) ** 0.5)
+    return (input - model(input, sigma_in, **kwargs)) / sigma
+
+
+def sample_unipc(model, x, sigmas, extra_args=None, callback=None, disable=False, variant="bh1"):
+    timesteps = sigmas.clone()
+    if sigmas[-1] < 0.001:
+        timesteps[-1] = 0.001
+
+    ns = SigmaConvert()
+
+    x = x / torch.sqrt(1.0 + timesteps[0] ** 2.0)
+    model_type = "noise"
+
+    model_fn = unipc_impl.model_wrapper(
+        lambda input, sigma, **kwargs: predict_eps_sigma(model, input, sigma, **kwargs),
+        ns,
+        model_type=model_type,
+        guidance_type="uncond",
+        model_kwargs=extra_args,
+    )
+
+    order = min(3, len(timesteps) - 2)
+    uni_pc = unipc_impl.UniPC(model_fn, ns, predict_x0=True, thresholding=False, variant=variant)
+    x = uni_pc.sample(x, timesteps=timesteps, skip_type="time_uniform", method="multistep", order=order, lower_order_final=True, callback=callback, disable_pbar=disable)
+    x /= ns.marginal_alpha(timesteps[-1])
     return x

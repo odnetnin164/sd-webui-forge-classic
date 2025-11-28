@@ -3,9 +3,7 @@ import numpy as np
 import torch
 import tqdm
 
-from modules import shared
 from modules.torch_utils import float64
-from modules.uni_pc import uni_pc
 
 
 @torch.no_grad()
@@ -38,11 +36,6 @@ def ddim(model, x, timesteps, extra_args=None, callback=None, disable=None, eta=
             callback({"x": x, "i": i, "sigma": 0, "sigma_hat": 0, "denoised": pred_x0})
 
     return x
-
-
-@torch.no_grad()
-def ddim_cfgpp(model, x, timesteps, extra_args=None, callback=None, disable=None, eta=0.0):
-    raise NotImplementedError()
 
 
 @torch.no_grad()
@@ -103,41 +96,5 @@ def plms(model, x, timesteps, extra_args=None, callback=None, disable=None):
 
         if callback is not None:
             callback({"x": x, "i": i, "sigma": 0, "sigma_hat": 0, "denoised": pred_x0})
-
-    return x
-
-
-class UniPCCFG(uni_pc.UniPC):
-    def __init__(self, cfg_model, extra_args, callback, *args, **kwargs):
-        super().__init__(None, *args, **kwargs)
-
-        def after_update(x, model_x):
-            callback({"x": x, "i": self.index, "sigma": 0, "sigma_hat": 0, "denoised": model_x})
-            self.index += 1
-
-        self.cfg_model = cfg_model
-        self.extra_args = extra_args
-        self.callback = callback
-        self.index = 0
-        self.after_update = after_update
-
-    def get_model_input_time(self, t_continuous):
-        return (t_continuous - 1.0 / self.noise_schedule.total_N) * 1000.0
-
-    def model(self, x, t):
-        t_input = self.get_model_input_time(t)
-
-        res = self.cfg_model(x, t_input, **self.extra_args)
-
-        return res
-
-
-def unipc(model, x, timesteps, extra_args=None, callback=None, disable=None, is_img2img=False):
-    alphas_cumprod = model.inner_model.inner_model.alphas_cumprod
-
-    ns = uni_pc.NoiseScheduleVP("discrete", alphas_cumprod=alphas_cumprod)
-    t_start = timesteps[-1] / 1000 + 1 / 1000 if is_img2img else None  # this is likely off by a bit - if someone wants to fix it please by all means
-    unipc_sampler = UniPCCFG(model, extra_args, callback, ns, predict_x0=True, thresholding=False, variant=shared.opts.uni_pc_variant)
-    x = unipc_sampler.sample(x, steps=len(timesteps), t_start=t_start, skip_type=shared.opts.uni_pc_skip_type, method="multistep", order=shared.opts.uni_pc_order, lower_order_final=shared.opts.uni_pc_lower_order_final)
 
     return x

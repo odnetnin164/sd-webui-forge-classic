@@ -1,5 +1,3 @@
-import contextlib
-import enum
 import gc
 import math
 import os
@@ -20,7 +18,6 @@ model_path = os.path.abspath(os.path.join(paths.models_path, model_dir))
 
 checkpoints_list = {}
 checkpoint_aliases = {}
-checkpoint_alisases = checkpoint_aliases  # for compatibility with old name
 
 
 def replace_key(d, key, new_key, value):
@@ -121,12 +118,7 @@ class CheckpointInfo:
 
 
 def setup_model():
-    """called once at startup to do various one-time tasks related to SD models"""
-
     os.makedirs(model_path, exist_ok=True)
-
-    enable_midas_autodownload()
-    patch_given_betas()
 
 
 def checkpoint_tiles(use_short=False):
@@ -215,14 +207,6 @@ def select_checkpoint():
     return checkpoint_info
 
 
-def transform_checkpoint_dict_key(k, replacements):
-    pass
-
-
-def get_state_dict_from_checkpoint(pl_sd):
-    pass
-
-
 def read_metadata_from_safetensors(filename):
     import json
 
@@ -251,86 +235,9 @@ def read_metadata_from_safetensors(filename):
         return res
 
 
-def read_state_dict(checkpoint_file, print_global_state=False, map_location=None):
-    pass
-
-
-def SkipWritingToConfig():
-    return contextlib.nullcontext()
-
-
-def check_fp8(model):
-    pass
-
-
-def set_model_type(model, state_dict):
-    pass
-
-
-def set_model_fields(model):
-    pass
-
-
-def load_model_weights(model, checkpoint_info: CheckpointInfo, state_dict, timer):
-    pass
-
-
-def enable_midas_autodownload():
-    pass
-
-
-def patch_given_betas():
-    pass
-
-
-def repair_config(sd_config, state_dict=None):
-    pass
-
-
-def rescale_zero_terminal_snr_abar(alphas_cumprod):
-    alphas_bar_sqrt = alphas_cumprod.sqrt()
-
-    # Store old values.
-    alphas_bar_sqrt_0 = alphas_bar_sqrt[0].clone()
-    alphas_bar_sqrt_T = alphas_bar_sqrt[-1].clone()
-
-    # Shift so the last timestep is zero.
-    alphas_bar_sqrt -= alphas_bar_sqrt_T
-
-    # Scale so the first timestep is back to the old value.
-    alphas_bar_sqrt *= alphas_bar_sqrt_0 / (alphas_bar_sqrt_0 - alphas_bar_sqrt_T)
-
-    # Convert alphas_bar_sqrt to betas
-    alphas_bar = alphas_bar_sqrt**2  # Revert sqrt
-    alphas_bar[-1] = 4.8973451890853435e-08
-    return alphas_bar
-
-
-def apply_alpha_schedule_override(sd_model, p=None):
-    """
-    Applies an override to the alpha schedule of the model according to settings.
-    - downcasts the alpha schedule to half precision
-    - rescales the alpha schedule to have zero terminal SNR
-    """
-
-    if not hasattr(sd_model, "alphas_cumprod") or not hasattr(sd_model, "alphas_cumprod_original"):
-        return
-
-    sd_model.alphas_cumprod = sd_model.alphas_cumprod_original.to(shared.device)
-
-    if opts.use_downcasted_alpha_bar:
-        if p is not None:
-            p.extra_generation_params["Downcast alphas_cumprod"] = opts.use_downcasted_alpha_bar
-        sd_model.alphas_cumprod = sd_model.alphas_cumprod.half().to(shared.device)
-
-    if opts.sd_noise_schedule == "Zero Terminal SNR":
-        if p is not None:
-            p.extra_generation_params["Noise Schedule"] = opts.sd_noise_schedule
-        sd_model.alphas_cumprod = rescale_zero_terminal_snr_abar(sd_model.alphas_cumprod).to(shared.device)
-
-
-# This is a dummy class for backward compatibility when model is not load - for extensions like prompt all in one.
 class FakeInitialModel:
+    """a dummy class for compatibility when no model is loaded yet"""
+
     def __init__(self):
         self.cond_stage_model = None
         self.chunk_length = 75
@@ -356,62 +263,48 @@ class SdModelData:
 model_data = SdModelData()
 
 
-def get_empty_cond(sd_model):
-    pass
-
-
-def send_model_to_cpu(m):
-    pass
-
-
-def model_target_device(m):
-    return devices.device
-
-
-def send_model_to_device(m):
-    pass
-
-
-def send_model_to_trash(m):
-    pass
-
-
-def instantiate_from_config(config, state_dict=None):
-    pass
-
-
-def get_obj_from_str(string, reload=False):
-    pass
-
-
-def load_model(checkpoint_info=None, already_loaded_state_dict=None):
-    pass
-
-
-def reuse_model_from_already_loaded(sd_model, checkpoint_info, timer):
-    pass
-
-
-def reload_model_weights(sd_model=None, info=None, forced_reload=False):
-    pass
-
-
 def unload_model_weights(sd_model=None, info=None):
     memory_management.unload_all_models()
     return
 
 
-def apply_token_merging(sd_model, token_merging_ratio):
-    if token_merging_ratio <= 0:
+def list_loaded_weights():
+    if len(memory_management.current_loaded_models) == 0:
         return
 
-    print(f"token_merging_ratio = {token_merging_ratio}")
+    from rich.console import Console
+    from rich.table import Table
 
-    from backend.misc.tomesd import TomePatcher
+    table = Table(title="Currently Loaded Weights")
+    table.add_column("Model", justify="left")
+    table.add_column("VRAM", justify="right")
+    table.add_column("Device", justify="right")
 
-    sd_model.forge_objects.unet = TomePatcher.patch(model=sd_model.forge_objects.unet, ratio=token_merging_ratio)
+    for mdl in memory_management.current_loaded_models:
+        mdl.compute_inclusive_exclusive_memory()
+        table.add_row(
+            str(mdl.model.model.__class__.__name__),
+            f"{int(mdl.inclusive_memory / 2 ** 20)} (MB)" if mdl.inclusive_memory > 0 else "n.a.",
+            str(mdl.device),
+        )
 
-    return
+    print("")
+    console = Console()
+    console.print(table)
+
+
+def apply_token_merging(sd_model, token_merging_ratio):
+    if token_merging_ratio > 0.0:
+        from backend.misc.tomesd import TomePatcher
+
+        sd_model.forge_objects.unet = TomePatcher.patch(model=sd_model.forge_objects.unet, ratio=token_merging_ratio)
+        print(f"token_merging_ratio = {token_merging_ratio}")
+
+    if opts.scaling_factor > 1.0 and sd_model.model_config.model_type.name == "EPS":
+        from backend.misc.eps import EpsilonScaling
+
+        sd_model.forge_objects.unet = EpsilonScaling.patch(model=sd_model.forge_objects.unet, scaling_factor=opts.scaling_factor)
+        print(f"eps_scaling_factor = {opts.scaling_factor}")
 
 
 @torch.inference_mode()
@@ -450,7 +343,8 @@ def forge_model_reload():
             except AttributeError:
                 pass
 
-        del model_data.sd_model
+        model_data.sd_model = None
+        model_data.forge_hash = ""
         memory_management.soft_empty_cache()
         gc.collect()
 
@@ -468,7 +362,6 @@ def forge_model_reload():
 
     dynamic_args["forge_unet_storage_dtype"] = model_data.forge_loading_parameters.get("unet_storage_dtype", None)
     dynamic_args["embedding_dir"] = cmd_opts.embeddings_dir
-    dynamic_args["emphasis_name"] = opts.emphasis
     sd_model = forge_loader(state_dict, additional_state_dicts=additional_state_dicts)
     timer.record("forge model load")
 

@@ -18,7 +18,6 @@ class T5TextProcessingEngine:
         self.text_encoder = text_encoder.transformer
         self.tokenizer = tokenizer
 
-        self.emphasis = emphasis.get_current_option(opts.emphasis)()
         self.min_length = min_length
         self.min_padding = min_padding
         self.id_end = 1
@@ -101,7 +100,7 @@ class T5TextProcessingEngine:
                 chunks, token_count = self.tokenize_line(line)
                 line_z_values = []
 
-                #   pad all chunks to length of longest chunk
+                # pad all chunks to length of longest chunk
                 max_tokens = 0
                 for chunk in chunks:
                     max_tokens = max(len(chunk.tokens), max_tokens)

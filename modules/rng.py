@@ -4,22 +4,19 @@ from modules import devices, rng_philox, shared
 
 
 def get_noise_source_type():
-    if shared.opts.forge_try_reproduce in ['ComfyUI', 'DrawThings']:
+    if shared.opts.forge_try_reproduce in ["ComfyUI", "DrawThings"]:
         return "CPU"
 
     return shared.opts.randn_source
 
 
 def randn(seed, shape, generator=None):
-    """Generate a tensor with random numbers from a normal distribution using seed.
-
-    Uses the seed parameter to set the global torch seed; to generate more with that seed, use randn_like/randn_without_seed."""
+    """
+    Generate a tensor with random numbers from a normal distribution using seed.
+    Uses the seed parameter to set the global torch seed; to generate more with that seed, use randn_like/randn_without_seed.
+    """
 
     if generator is not None:
-        # Forge Note:
-        # If generator is not none, we must use another seed to
-        # avoid global torch.rand to get same noise again.
-        # Note: removing this will make DDPM sampler broken.
         manual_seed((seed + 100000) % 65536)
     else:
         manual_seed(seed)
@@ -27,56 +24,59 @@ def randn(seed, shape, generator=None):
     if get_noise_source_type() == "NV":
         return torch.asarray((generator or nv_rng).randn(shape), device=devices.device)
 
-    if get_noise_source_type() == "CPU" or devices.device.type == 'mps':
+    if get_noise_source_type() == "CPU" or devices.device.type == "mps":
         return torch.randn(shape, device=devices.cpu, generator=generator).to(devices.device)
 
     return torch.randn(shape, device=devices.device, generator=generator)
 
 
 def randn_local(seed, shape):
-    """Generate a tensor with random numbers from a normal distribution using seed.
-
-    Does not change the global random number generator. You can only generate the seed's first tensor using this function."""
+    """
+    Generate a tensor with random numbers from a normal distribution using seed.
+    Does not change the global random number generator. You can only generate the seed's first tensor using this function.
+    """
 
     if get_noise_source_type() == "NV":
         rng = rng_philox.Generator(seed)
         return torch.asarray(rng.randn(shape), device=devices.device)
 
-    local_device = devices.cpu if get_noise_source_type() == "CPU" or devices.device.type == 'mps' else devices.device
+    local_device = devices.cpu if get_noise_source_type() == "CPU" or devices.device.type == "mps" else devices.device
     local_generator = torch.Generator(local_device).manual_seed(int(seed))
     return torch.randn(shape, device=local_device, generator=local_generator).to(devices.device)
 
 
 def randn_like(x):
-    """Generate a tensor with random numbers from a normal distribution using the previously initialized generator.
-
-    Use either randn() or manual_seed() to initialize the generator."""
+    """
+    Generate a tensor with random numbers from a normal distribution using the previously initialized generator.
+    Use either randn() or manual_seed() to initialize the generator.
+    """
 
     if get_noise_source_type() == "NV":
         return torch.asarray(nv_rng.randn(x.shape), device=x.device, dtype=x.dtype)
 
-    if get_noise_source_type() == "CPU" or x.device.type == 'mps':
+    if get_noise_source_type() == "CPU" or x.device.type == "mps":
         return torch.randn_like(x, device=devices.cpu).to(x.device)
 
     return torch.randn_like(x)
 
 
 def randn_without_seed(shape, generator=None):
-    """Generate a tensor with random numbers from a normal distribution using the previously initialized generator.
-
-    Use either randn() or manual_seed() to initialize the generator."""
+    """
+    Generate a tensor with random numbers from a normal distribution using the previously initialized generator.
+    Use either randn() or manual_seed() to initialize the generator.
+    """
 
     if get_noise_source_type() == "NV":
         return torch.asarray((generator or nv_rng).randn(shape), device=devices.device)
 
-    if get_noise_source_type() == "CPU" or devices.device.type == 'mps':
+    if get_noise_source_type() == "CPU" or devices.device.type == "mps":
         return torch.randn(shape, device=devices.cpu, generator=generator).to(devices.device)
 
     return torch.randn(shape, device=devices.device, generator=generator)
 
 
 def manual_seed(seed):
-    """Set up a global random number generator using the specified seed."""
+    """Set up a global random number generator using the specified seed"""
 
     if get_noise_source_type() == "NV":
         global nv_rng
@@ -90,23 +90,23 @@ def create_generator(seed):
     if get_noise_source_type() == "NV":
         return rng_philox.Generator(seed)
 
-    device = devices.cpu if get_noise_source_type() == "CPU" or devices.device.type == 'mps' else devices.device
+    device = devices.cpu if get_noise_source_type() == "CPU" or devices.device.type == "mps" else devices.device
     generator = torch.Generator(device).manual_seed(int(seed))
     return generator
 
 
 # from https://discuss.pytorch.org/t/help-regarding-slerp-function-for-generative-model-sampling/32475/3
 def slerp(val, low, high):
-    low_norm = low/torch.norm(low, dim=1, keepdim=True)
-    high_norm = high/torch.norm(high, dim=1, keepdim=True)
-    dot = (low_norm*high_norm).sum(1)
+    low_norm = low / torch.norm(low, dim=1, keepdim=True)
+    high_norm = high / torch.norm(high, dim=1, keepdim=True)
+    dot = (low_norm * high_norm).sum(1)
 
     if dot.mean() > 0.9995:
         return low * val + high * (1 - val)
 
     omega = torch.acos(dot)
     so = torch.sin(omega)
-    res = (torch.sin((1.0-val)*omega)/so).unsqueeze(1)*low + (torch.sin(val*omega)/so).unsqueeze(1) * high
+    res = (torch.sin((1.0 - val) * omega) / so).unsqueeze(1) * low + (torch.sin(val * omega) / so).unsqueeze(1) * high
     return res
 
 
@@ -153,7 +153,7 @@ class ImageRNG:
                 dx = max(-dx, 0)
                 dy = max(-dy, 0)
 
-                x[:, ty:ty + h, tx:tx + w] = noise[:, dy:dy + h, dx:dx + w]
+                x[:, ty : ty + h, tx : tx + w] = noise[:, dy : dy + h, dx : dx + w]
                 noise = x
 
             xs.append(noise)

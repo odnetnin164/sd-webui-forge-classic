@@ -10,6 +10,10 @@ from backend.patcher.unet import UnetPatcher
 from backend.patcher.vae import VAE
 from backend.text_processing.umt5_engine import UMT5TextProcessingEngine
 
+# get_learned_conditioning is not called in the Refiner pass;
+# so we store the desired shift value for the low_noise model
+refiner_shift: float = None
+
 
 class Wan(ForgeDiffusionEngine):
     matched_guesses = [model_list.WAN21_T2V, model_list.WAN21_I2V]
@@ -36,16 +40,21 @@ class Wan(ForgeDiffusionEngine):
         self.forge_objects_original = self.forge_objects.shallow_copy()
         self.forge_objects_after_applying_lora = self.forge_objects.shallow_copy()
 
+        self.use_shift = True
         self.is_wan = True
 
-    def set_clip_skip(self, clip_skip):
-        pass
+        global refiner_shift
+        if refiner_shift is not None:
+            self.forge_objects.unet.model.predictor.set_parameters(shift=refiner_shift)
+            refiner_shift = None
 
     @torch.inference_mode()
     def get_learned_conditioning(self, prompt: list[str]):
         memory_management.load_model_gpu(self.forge_objects.clip.patcher)
+        global refiner_shift
         shift = getattr(prompt, "distilled_cfg_scale", 8.0)
         self.forge_objects.unet.model.predictor.set_parameters(shift=shift)
+        refiner_shift = shift
         return self.text_processing_engine_t5(prompt)
 
     @torch.inference_mode()
@@ -91,7 +100,7 @@ class Wan(ForgeDiffusionEngine):
         else:
             z = torch.cat((mask, image), dim=1)
 
-        args.dynamic_args["ref_latents"] = z
+        args.dynamic_args["concat_latent"] = z
 
     @torch.inference_mode()
     def encode_first_stage(self, x):

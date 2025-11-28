@@ -238,38 +238,6 @@ class PredictionFlow(AbstractPrediction):
         return 1.0 - percent
 
 
-class PredictionDiscreteFlow(AbstractPrediction):
-    def __init__(self, sigma_data=1.0, prediction_type="const", shift=1.0, timesteps=1000):
-        super().__init__(sigma_data=sigma_data, prediction_type=prediction_type)
-        self.shift = shift
-        ts = self.sigma(torch.arange(1, timesteps + 1, 1))
-        self.register_buffer("sigmas", ts)
-
-    @property
-    def sigma_min(self):
-        return self.sigmas[0]
-
-    @property
-    def sigma_max(self):
-        return self.sigmas[-1]
-
-    def timestep(self, sigma):
-        return sigma * 1000
-
-    def sigma(self, timestep: torch.Tensor):
-        timestep = timestep / 1000.0
-        if self.shift == 1.0:
-            return timestep
-        return self.shift * timestep / (1 + (self.shift - 1) * timestep)
-
-    def percent_to_sigma(self, percent):
-        if percent <= 0.0:
-            return 1.0
-        if percent >= 1.0:
-            return 0.0
-        return 1.0 - percent
-
-
 class PredictionFlux(AbstractPrediction):
     def __init__(self, seq_len=4096, base_seq_len=256, max_seq_len=4096, base_shift=0.5, max_shift=1.15, pseudo_timestep_range=10000, mu=None):
         super().__init__(sigma_data=1.0, prediction_type="const")
@@ -311,17 +279,17 @@ class PredictionFlux(AbstractPrediction):
 
 
 class PredictionDiscreteFlow(AbstractPrediction):
-    """https://github.com/comfyanonymous/ComfyUI/blob/v0.3.50/comfy/model_sampling.py#L243"""
+    """https://github.com/comfyanonymous/ComfyUI/blob/v0.3.64/comfy/model_sampling.py#L243"""
 
     def __init__(self, model_config):
         super().__init__(sigma_data=None, prediction_type="const")
         sampling_settings: dict = model_config.sampling_settings
         self.set_parameters(shift=sampling_settings.get("shift", 1.0), multiplier=sampling_settings.get("multiplier", 1000))
 
-    def set_parameters(self, shift=1.0, timesteps=1000, multiplier=1000):
-        self.shift = shift
-        self.multiplier = multiplier
-        ts = self.sigma((torch.arange(1, timesteps + 1, 1) / timesteps) * multiplier)
+    def set_parameters(self, *, shift=None, multiplier=None, timesteps=1000):
+        self.shift = shift or self.shift
+        self.multiplier = multiplier or self.multiplier
+        ts = self.sigma((torch.arange(1, timesteps + 1, 1) / timesteps) * self.multiplier)
         self.register_buffer("sigmas", ts)
 
     @property
