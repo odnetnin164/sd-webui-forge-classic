@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 import torch
 
 from backend import memory_management
+from backend.args import dynamic_args
 from backend.text_processing import emphasis, parsing
 from modules.shared import opts
 
@@ -43,10 +44,8 @@ class GemmaTextProcessingEngine:
 
         chunks = []
         chunk = PromptChunk()
-        token_count = 0
 
         def next_chunk():
-            nonlocal token_count
             nonlocal chunk
 
             chunk.tokens = [self.id_start] + chunk.tokens
@@ -70,7 +69,7 @@ class GemmaTextProcessingEngine:
         if chunk.tokens or not chunks:
             next_chunk()
 
-        return chunks, token_count
+        return chunks
 
     @staticmethod
     def process_template(text: str, negative: bool) -> str:
@@ -85,10 +84,12 @@ class GemmaTextProcessingEngine:
             return "\n".join([opts.neta_template_positive, text])
 
     def __call__(self, texts: "SdConditioning"):
+        self.emphasis = emphasis.get_current_option(opts.emphasis)()
+        if any(emphasis.uses_emphasis(x) for x in texts):
+            dynamic_args.last_extra_generation_params["Emphasis"] = self.emphasis.name
+
         zs = []
         cache = {}
-
-        self.emphasis = emphasis.get_current_option(opts.emphasis)()
 
         for line in texts:
             line = self.process_template(line, texts.is_negative_prompt)
@@ -96,22 +97,12 @@ class GemmaTextProcessingEngine:
             if line in cache:
                 line_z_values = cache[line]
             else:
-                chunks, token_count = self.tokenize_line(line)
+                chunks = self.tokenize_line(line)
                 line_z_values = []
-
-                # pad all chunks to length of longest chunk
-                # max_tokens = 0
-                # for chunk in chunks:
-                #     max_tokens = max(len(chunk.tokens), max_tokens)
 
                 for chunk in chunks:
                     tokens = chunk.tokens
                     multipliers = chunk.multipliers
-
-                    # remaining_count = max_tokens - len(tokens)
-                    # if remaining_count > 0:
-                    #     tokens += [self.id_pad] * remaining_count
-                    #     multipliers += [1.0] * remaining_count
 
                     z = self.process_tokens([tokens], [multipliers])[0]
                     line_z_values.append(z)
@@ -119,11 +110,10 @@ class GemmaTextProcessingEngine:
 
             zs.extend(line_z_values)
 
-        return torch.stack(zs)
+        return zs
 
     def process_embeds(self, batch_tokens):
         device = memory_management.text_encoder_device()
-        self.text_encoder.to(device)
 
         embeds_out = []
         attention_masks = []
@@ -156,6 +146,13 @@ class GemmaTextProcessingEngine:
 
     def process_tokens(self, batch_tokens, batch_multipliers):
         embeds, mask, count = self.process_embeds(batch_tokens)
+
+        self.emphasis.tokens = batch_tokens
+        self.emphasis.multipliers = torch.asarray(batch_multipliers).to(embeds)
+        self.emphasis.z = embeds
+        self.emphasis.after_transformers()
+        embeds = self.emphasis.z
+
         _, z = self.text_encoder(
             None,
             attention_mask=mask,

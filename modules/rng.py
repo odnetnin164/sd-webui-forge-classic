@@ -3,13 +3,6 @@ import torch
 from modules import devices, rng_philox, shared
 
 
-def get_noise_source_type():
-    if shared.opts.forge_try_reproduce in ["ComfyUI", "DrawThings"]:
-        return "CPU"
-
-    return shared.opts.randn_source
-
-
 def randn(seed, shape, generator=None):
     """
     Generate a tensor with random numbers from a normal distribution using seed.
@@ -21,10 +14,10 @@ def randn(seed, shape, generator=None):
     else:
         manual_seed(seed)
 
-    if get_noise_source_type() == "NV":
+    if shared.opts.randn_source == "NV":
         return torch.asarray((generator or nv_rng).randn(shape), device=devices.device)
 
-    if get_noise_source_type() == "CPU" or devices.device.type == "mps":
+    if shared.opts.randn_source == "CPU" or devices.device.type == "mps":
         return torch.randn(shape, device=devices.cpu, generator=generator).to(devices.device)
 
     return torch.randn(shape, device=devices.device, generator=generator)
@@ -36,11 +29,11 @@ def randn_local(seed, shape):
     Does not change the global random number generator. You can only generate the seed's first tensor using this function.
     """
 
-    if get_noise_source_type() == "NV":
+    if shared.opts.randn_source == "NV":
         rng = rng_philox.Generator(seed)
         return torch.asarray(rng.randn(shape), device=devices.device)
 
-    local_device = devices.cpu if get_noise_source_type() == "CPU" or devices.device.type == "mps" else devices.device
+    local_device = devices.cpu if shared.opts.randn_source == "CPU" or devices.device.type == "mps" else devices.device
     local_generator = torch.Generator(local_device).manual_seed(int(seed))
     return torch.randn(shape, device=local_device, generator=local_generator).to(devices.device)
 
@@ -51,10 +44,10 @@ def randn_like(x):
     Use either randn() or manual_seed() to initialize the generator.
     """
 
-    if get_noise_source_type() == "NV":
+    if shared.opts.randn_source == "NV":
         return torch.asarray(nv_rng.randn(x.shape), device=x.device, dtype=x.dtype)
 
-    if get_noise_source_type() == "CPU" or x.device.type == "mps":
+    if shared.opts.randn_source == "CPU" or x.device.type == "mps":
         return torch.randn_like(x, device=devices.cpu).to(x.device)
 
     return torch.randn_like(x)
@@ -66,10 +59,10 @@ def randn_without_seed(shape, generator=None):
     Use either randn() or manual_seed() to initialize the generator.
     """
 
-    if get_noise_source_type() == "NV":
+    if shared.opts.randn_source == "NV":
         return torch.asarray((generator or nv_rng).randn(shape), device=devices.device)
 
-    if get_noise_source_type() == "CPU" or devices.device.type == "mps":
+    if shared.opts.randn_source == "CPU" or devices.device.type == "mps":
         return torch.randn(shape, device=devices.cpu, generator=generator).to(devices.device)
 
     return torch.randn(shape, device=devices.device, generator=generator)
@@ -78,7 +71,7 @@ def randn_without_seed(shape, generator=None):
 def manual_seed(seed):
     """Set up a global random number generator using the specified seed"""
 
-    if get_noise_source_type() == "NV":
+    if shared.opts.randn_source == "NV":
         global nv_rng
         nv_rng = rng_philox.Generator(seed)
         return
@@ -87,27 +80,36 @@ def manual_seed(seed):
 
 
 def create_generator(seed):
-    if get_noise_source_type() == "NV":
+    if shared.opts.randn_source == "NV":
         return rng_philox.Generator(seed)
 
-    device = devices.cpu if get_noise_source_type() == "CPU" or devices.device.type == "mps" else devices.device
+    device = devices.cpu if shared.opts.randn_source == "CPU" or devices.device.type == "mps" else devices.device
     generator = torch.Generator(device).manual_seed(int(seed))
     return generator
 
 
-# from https://discuss.pytorch.org/t/help-regarding-slerp-function-for-generative-model-sampling/32475/3
-def slerp(val, low, high):
-    low_norm = low / torch.norm(low, dim=1, keepdim=True)
-    high_norm = high / torch.norm(high, dim=1, keepdim=True)
-    dot = (low_norm * high_norm).sum(1)
+def slerp(val: float, low: torch.Tensor, high: torch.Tensor, eps=1e-6) -> torch.Tensor:
+    b = low.shape[0]
 
-    if dot.mean() > 0.9995:
-        return low * val + high * (1 - val)
+    low_flat = low.reshape(b, -1)
+    high_flat = high.reshape(b, -1)
+
+    low_norm = low_flat / (low_flat.norm(dim=1, keepdim=True) + eps)
+    high_norm = high_flat / (high_flat.norm(dim=1, keepdim=True) + eps)
+
+    dot = (low_norm * high_norm).sum(dim=1).clamp(-1 + eps, 1 - eps)
 
     omega = torch.acos(dot)
     so = torch.sin(omega)
-    res = (torch.sin((1.0 - val) * omega) / so).unsqueeze(1) * low + (torch.sin(val * omega) / so).unsqueeze(1) * high
-    return res
+
+    mask = so.abs() < eps
+    so = torch.where(mask, torch.ones_like(so), so)
+
+    res_flat = torch.sin((1.0 - val) * omega).unsqueeze(1) / so.unsqueeze(1) * low_flat + torch.sin(val * omega).unsqueeze(1) / so.unsqueeze(1) * high_flat
+
+    res_flat = torch.where(mask.unsqueeze(1), (1 - val) * low_flat + val * high_flat, res_flat)
+
+    return res_flat.reshape_as(low)
 
 
 class ImageRNG:

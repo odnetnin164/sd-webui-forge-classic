@@ -12,16 +12,15 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, Final, NamedTuple
 
-from modules import cmd_args, errors, logging_config
+from modules import cmd_args, errors
 from modules.paths_internal import extensions_builtin_dir, extensions_dir, script_path
 from modules.timer import startup_timer
 from modules_forge import forge_version
 from modules_forge.config import always_disabled_extensions
 
 args, _ = cmd_args.parser.parse_known_args()
-logging_config.setup_logging(args.loglevel)
 
 python = sys.executable
 git = os.environ.get("GIT", "git")
@@ -38,14 +37,14 @@ def check_python_version():
     minor = sys.version_info.minor
     micro = sys.version_info.micro
 
-    if not (major == 3 and minor == 11):
+    if not (major == 3 and minor == 13):
         import modules.errors
 
         modules.errors.print_error_explanation(
             f"""
-            This program is tested with 3.11.9 Python, but you have {major}.{minor}.{micro}.
+            This program is tested with 3.13.12 Python, but you have {major}.{minor}.{micro}.
             If you encounter any error regarding unsuccessful package/library installation,
-            please downgrade (or upgrade) to the latest version of 3.11 Python,
+            please downgrade (or upgrade) to the latest version of 3.13 Python,
             and delete the current Python "venv" folder in WebUI's directory.
 
             Use --skip-python-version-check to suppress this warning
@@ -89,12 +88,21 @@ def run(command, desc=None, errdesc=None, custom_env=None, live: bool = default_
     return result.stdout or ""
 
 
-def _torch_version() -> str:
+def _torch_version() -> tuple[str, str]:
+    """Given `2.10.0.dev20251111+cu130` ; Return `("2.10.0", "cu130")`"""
     import importlib.metadata
 
     ver = importlib.metadata.version("torch")
-    ver = ver.split("+", 1)[0]
-    return re.search(r"[\d.]+[\d]", ver).group(0)
+    m = re.search(r"(\d+\.\d+\.\d+)(?:[^+]+)?\+(.+)", ver)
+
+    if m is None:
+        print("\n\nFailed to parse PyTorch version...")
+        ver = os.environ.get("PYTORCH_VERSION", "2.10.0+cu130")
+        print("Assuming: ", ver)
+        print('(you can change this with `export PYTORCH_VERSION="..."`)\n\n')
+        m = re.search(r"(\d+\.\d+\.\d+)(?:[^+]+)?\+(.+)", ver)
+
+    return m.group(1), m.group(2)
 
 
 def is_installed(package):
@@ -123,9 +131,12 @@ def run_pip(command, desc=None, live=default_command_live):
     return run(f'"{python}" -m pip {command} --prefer-binary{index_url_line}', desc=f"Installing {desc}", errdesc=f"Couldn't install {desc}", live=live)
 
 
-def check_run_python(code: str) -> bool:
+def check_run_python(code: str, *, return_error: bool = False) -> bool | tuple[bool, str]:
     result = subprocess.run([python, "-c", code], capture_output=True, shell=False)
-    return result.returncode == 0
+    if return_error:
+        return result.returncode == 0, result.stderr
+    else:
+        return result.returncode == 0
 
 
 def git_fix_workspace(*args, **kwargs):
@@ -235,10 +246,8 @@ def run_extensions_installers(settings_file):
                 run_extension_installer(path)
                 startup_timer.record(dirname_extension)
 
-    return
 
-
-re_requirement = re.compile(r"\s*([-_a-zA-Z0-9]+)\s*(?:==\s*([-+_.a-zA-Z0-9]+))?\s*")
+re_requirement = re.compile(r"\s*(\S+)\s*==\s*([^\s;]+)\s*")
 
 
 def requirements_met(requirements_file):
@@ -256,36 +265,34 @@ def requirements_met(requirements_file):
             if line.strip() == "":
                 continue
 
-            m = re.match(re_requirement, line)
-            if m is None:
-                return False
-
-            package = m.group(1).strip()
-            version_required = (m.group(2) or "").strip()
-
-            if version_required == "":
+            if (m := re.match(re_requirement, line)) is None:
                 continue
+
+            package = m.group(1)
+            version_required = m.group(2)
 
             try:
                 version_installed = importlib.metadata.version(package)
             except Exception:
                 return False
 
-            if packaging.version.parse(version_required) != packaging.version.parse(version_installed):
+            if version_installed is None:
+                return False
+
+            if packaging.version.parse(version_installed) < packaging.version.parse(version_required):
                 return False
 
     return True
 
 
 def prepare_environment():
-    torch_index_url = os.environ.get("TORCH_INDEX_URL", "https://download.pytorch.org/whl/cu128")
-    torch_command = os.environ.get("TORCH_COMMAND", f"pip install torch==2.9.1+cu128 torchvision==0.24.1+cu128 --extra-index-url {torch_index_url}")
-    xformers_package = os.environ.get("XFORMERS_PACKAGE", f"xformers==0.0.33.post1 --extra-index-url {torch_index_url}")
-    bnb_package = os.environ.get("BNB_PACKAGE", "bitsandbytes==0.48.2")
+    torch_index_url = os.environ.get("TORCH_INDEX_URL", "https://download.pytorch.org/whl/cu130")
+    torch_command = os.environ.get("TORCH_COMMAND", f"pip install torch==2.11.0+cu130 torchvision==0.26.0+cu130 --extra-index-url {torch_index_url}")
+    xformers_package = os.environ.get("XFORMERS_PACKAGE", f"xformers==0.0.35 --extra-index-url {torch_index_url}")
+    bnb_package = os.environ.get("BNB_PACKAGE", "bitsandbytes==0.49.2")
 
-    clip_package = os.environ.get("CLIP_PACKAGE", "https://github.com/openai/CLIP/archive/d50d76daa670286dd6cacf3bcd80b5e4823fc8e1.zip")
-    packaging_package = os.environ.get("PACKAGING_PACKAGE", "packaging==24.2")
-    gradio_package = os.environ.get("GRADIO_PACKAGE", "gradio==4.40.0 gradio_imageslider==0.0.20 gradio_rangeslider==0.0.6")
+    packaging_package = os.environ.get("PACKAGING_PACKAGE", "packaging==26.0")
+    gradio_package = os.environ.get("GRADIO_PACKAGE", "gradio==4.40.0 gradio_rangeslider==0.0.8")
     requirements_file = os.environ.get("REQS_FILE", "requirements.txt")
 
     try:
@@ -310,8 +317,19 @@ def prepare_environment():
         startup_timer.record("install torch")
 
     if not args.skip_torch_cuda_test:
-        if not check_run_python("import torch; assert torch.cuda.is_available()"):
-            raise RuntimeError("PyTorch is not able to access CUDA")
+        TORCH_CHECK: str = """
+import torch
+cuda = hasattr(torch, "cuda") and torch.cuda.is_available()
+xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
+mps = hasattr(torch, "mps") and torch.mps.is_available()
+assert cuda or xpu or mps
+        """
+
+        success, err = check_run_python(TORCH_CHECK, return_error=True)
+        if not success:
+            if "older driver" in str(err).lower():
+                raise SystemError("Please update your GPU driver to support cu130 ; or manually install older PyTorch")
+            raise RuntimeError("PyTorch is not able to access GPU")
         startup_timer.record("torch GPU test")
 
     if not is_installed("packaging"):
@@ -320,24 +338,25 @@ def prepare_environment():
     ver_PY = f"cp{sys.version_info.major}{sys.version_info.minor}"
     ver_SAGE = "2.2.0"
     ver_FLASH = "2.8.3"
-    ver_TRITON = "3.5.1"
-    ver_NUNCHAKU = "1.0.2"
-    ver_TORCH = _torch_version()
+    ver_TRITON = "3.6.0"
+    ver_NUNCHAKU = "1.2.1"
+    ver_TORCH, ver_CUDA = _torch_version()
+    v_TORCH = ver_TORCH.rsplit(".", 1)[0]
+    v_CUDA = f"{ver_CUDA[0:-1]}.{ver_CUDA[-1]}"
 
     if os.name == "nt":
-        post_SAGE = ".post3"
-        ver_TRITON += ".post21"
+        ver_TRITON += ".post26"
 
-        sage_package = os.environ.get("SAGE_PACKAGE", f"https://github.com/woct0rdho/SageAttention/releases/download/v{ver_SAGE}-windows{post_SAGE}/sageattention-{ver_SAGE}+cu128torch{ver_TORCH.replace('.1', '.0')}{post_SAGE}-cp39-abi3-win_amd64.whl")
-        flash_package = os.environ.get("FLASH_PACKAGE", f"https://github.com/kingbri1/flash-attention/releases/download/v{ver_FLASH}/flash_attn-{ver_FLASH}+cu128torch{ver_TORCH}cxx11abiFALSE-{ver_PY}-{ver_PY}-win_amd64.whl")
+        sage_package = os.environ.get("SAGE_PACKAGE", f"https://github.com/woct0rdho/SageAttention/releases/download/v{ver_SAGE}-windows.post4/sageattention-{ver_SAGE}+{ver_CUDA}torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl")
+        flash_package = os.environ.get("FLASH_PACKAGE", f"https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/flash_attn-{ver_FLASH}+{ver_CUDA}torch{v_TORCH}-{ver_PY}-{ver_PY}-win_amd64.whl")
         triton_package = os.environ.get("TRITION_PACKAGE", f"triton-windows=={ver_TRITON}")
-        nunchaku_package = os.environ.get("NUNCHAKU_PACKAGE", f"https://github.com/nunchaku-tech/nunchaku/releases/download/v{ver_NUNCHAKU}/nunchaku-{ver_NUNCHAKU}+torch{ver_TORCH[:3]}-{ver_PY}-{ver_PY}-win_amd64.whl")
+        nunchaku_package = os.environ.get("NUNCHAKU_PACKAGE", f"https://github.com/nunchaku-ai/nunchaku/releases/download/v{ver_NUNCHAKU}/nunchaku-{ver_NUNCHAKU}+{v_CUDA}torch{v_TORCH}-{ver_PY}-{ver_PY}-win_amd64.whl")
 
     else:
         sage_package = os.environ.get("SAGE_PACKAGE", f"sageattention=={ver_SAGE}")
-        flash_package = os.environ.get("FLASH_PACKAGE", f"https://github.com/Dao-AILab/flash-attention/releases/download/v{ver_FLASH}/flash_attn-{ver_FLASH}+cu12torch{ver_TORCH[:3]}cxx11abiFALSE-{ver_PY}-{ver_PY}-linux_x86_64.whl")
+        flash_package = os.environ.get("FLASH_PACKAGE", f"https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-{ver_FLASH}+{ver_CUDA}torch{v_TORCH}-{ver_PY}-{ver_PY}-linux_x86_64.whl")
         triton_package = os.environ.get("TRITION_PACKAGE", f"triton=={ver_TRITON}")
-        nunchaku_package = os.environ.get("NUNCHAKU_PACKAGE", f"https://github.com/nunchaku-tech/nunchaku/releases/download/v{ver_NUNCHAKU}/nunchaku-{ver_NUNCHAKU}+torch{ver_TORCH[:3]}-{ver_PY}-{ver_PY}-linux_x86_64.whl")
+        nunchaku_package = os.environ.get("NUNCHAKU_PACKAGE", f"https://github.com/nunchaku-ai/nunchaku/releases/download/v{ver_NUNCHAKU}/nunchaku-{ver_NUNCHAKU}+{v_CUDA}torch{v_TORCH}-{ver_PY}-{ver_PY}-linux_x86_64.whl")
 
     def _verify_nunchaku() -> bool:
         if not is_installed("nunchaku"):
@@ -353,34 +372,35 @@ def prepare_environment():
 
         return current >= target
 
-    if not is_installed("clip"):
-        run_pip(f"install {clip_package}", "clip")
-        startup_timer.record("install clip")
-
     if args.xformers and (not is_installed("xformers") or args.reinstall_xformers):
         run_pip(f"install -U -I --no-deps {xformers_package}", "xformers")
         startup_timer.record("install xformers")
 
     if args.sage:
         if not is_installed("triton"):
-            run_pip(f"install -U -I --no-deps {triton_package}", "triton")
-            startup_timer.record("install triton")
+            try:
+                run_pip(f"install -U -I --no-deps {triton_package}", "triton")
+            except RuntimeError:
+                print("Failed to install triton; Please manually install it")
+            else:
+                startup_timer.record("install triton")
         if not is_installed("sageattention"):
-            run_pip(f"install -U -I --no-deps {sage_package}", "sageattention")
-            startup_timer.record("install sageattention")
+            try:
+                run_pip(f"install -U -I --no-deps {sage_package}", "sageattention")
+            except RuntimeError:
+                print("Failed to install sageattention; Please manually install it")
+            else:
+                startup_timer.record("install sageattention")
 
     if args.flash and not is_installed("flash_attn"):
         try:
             run_pip(f"install {flash_package}", "flash_attn")
         except RuntimeError:
-            if "9" in ver_TORCH and os.name == "nt":
-                print("There is currently no flash_attn built for PyTorch 2.9.0 on Windows...")
-            else:
-                print("Failed to install flash_attn; Please manually install it")
+            print("Failed to install flash_attn; Please manually install it")
         else:
             startup_timer.record("install flash_attn")
 
-    if not _verify_nunchaku():
+    if args.nunchaku and not _verify_nunchaku():
         try:
             run_pip(f"install {nunchaku_package}", "nunchaku")
         except RuntimeError:
@@ -388,7 +408,7 @@ def prepare_environment():
         else:
             startup_timer.record("install nunchaku")
 
-    if not args.disable_bnb and not is_installed("bitsandbytes"):
+    if args.bnb and not is_installed("bitsandbytes"):
         try:
             run_pip(f"install {bnb_package}", "bitsandbytes")
         except RuntimeError:
@@ -400,19 +420,21 @@ def prepare_environment():
         run_pip("install ngrok", "ngrok")
         startup_timer.record("install ngrok")
 
-    if not os.path.isfile(requirements_file):
-        requirements_file = os.path.join(script_path, requirements_file)
-
     if not is_installed("gradio"):
         run_pip(f"install {gradio_package}", "gradio")
+
+    if not os.path.isfile(requirements_file):
+        requirements_file = os.path.join(script_path, requirements_file)
 
     if not requirements_met(requirements_file):
         run_pip(f'install -r "{requirements_file}"', "requirements")
         startup_timer.record("install requirements")
 
     if args.onnxruntime_gpu and not is_installed("onnxruntime-gpu"):
-        # https://onnxruntime.ai/docs/install/#install-onnx-runtime-gpu-cuda-12x
-        onnxruntime_package = os.environ.get("ONNX_PACKAGE", "onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/")
+        # https://onnxruntime.ai/docs/install/#nightly-for-cuda-13x
+        _deps = "coloredlogs flatbuffers numpy packaging protobuf sympy"
+        onnxruntime_package = os.environ.get("ONNX_PACKAGE", "onnxruntime-gpu --pre --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/")
+        run_pip(f"install {_deps}", "onnxruntime dependencies")
         run_pip(f"install {onnxruntime_package}", "onnxruntime-gpu")
         startup_timer.record("install onnxruntime-gpu")
 
@@ -447,6 +469,8 @@ def configure_a1111_reference(a1111_home: Path):
         ModelRef(arg_name="--ckpt-dirs", relative_path="Stable-diffusion"),
         ModelRef(arg_name="--text-encoder-dirs", relative_path="text_encoder"),
         ModelRef(arg_name="--vae-dirs", relative_path="VAE"),
+        ModelRef(arg_name="--controlnet-dir", relative_path="ControlNet"),
+        ModelRef(arg_name="--controlnet-preprocessor-models-dir", relative_path="ControlNetPreprocessor"),
     )
 
     for ref in refs:
@@ -470,6 +494,7 @@ def configure_comfy_reference(comfy_home: Path):
         ModelRef(arg_name="--text-encoder-dirs", relative_path="text_encoders"),
         ModelRef(arg_name="--lora-dirs", relative_path="loras"),
         ModelRef(arg_name="--vae-dirs", relative_path="vae"),
+        ModelRef(arg_name="--controlnet-dirs", relative_path="controlnet"),
     )
 
     for ref in refs:
@@ -482,8 +507,47 @@ def configure_comfy_reference(comfy_home: Path):
         sys.argv.extend([ref.arg_name, str(target_path.absolute())])
 
 
+def _configure_yaml(base: str, config: str | list, arg: str):
+    if config is None:
+        return
+    if isinstance(config, str):
+        config = [config]
+
+    assert isinstance(config, list)
+
+    for folder in config:
+        path = os.path.abspath(os.path.normpath(os.path.join(base, folder)))
+        if os.path.isdir(path):
+            sys.argv.extend([arg, str(path)])
+
+
+def configure_comfy_yaml(comfy_yaml: Path):
+    """Append model paths based on an existing Comfy config"""
+
+    import yaml
+
+    with open(comfy_yaml, "r", encoding="utf-8") as file:
+        configs: dict[str, dict[str, os.PathLike]] = yaml.safe_load(file)
+
+    for config in configs.values():
+        base = config.get("base_path", "")
+        _configure_yaml(base, config.get("checkpoints", None), "--ckpt-dirs")
+        _configure_yaml(base, config.get("diffusion_models", None), "--ckpt-dirs")
+        _configure_yaml(base, config.get("unet", None), "--ckpt-dirs")
+        _configure_yaml(base, config.get("clip", None), "--text-encoder-dirs")
+        _configure_yaml(base, config.get("text_encoders", None), "--text-encoder-dirs")
+        _configure_yaml(base, config.get("loras", None), "--lora-dirs")
+        _configure_yaml(base, config.get("vae", None), "--vae-dirs")
+        _configure_yaml(base, config.get("controlnet", None), "--controlnet-dirs")
+
+
 def start():
     print(f"Launching {'API server' if '--nowebui' in sys.argv else 'Web UI'} with arguments: {shlex.join(sys.argv[1:])}")
+
+    from modules import logging_config
+
+    logging_config.setup_logging(args.loglevel)
+
     import webui
 
     if "--nowebui" in sys.argv:
@@ -494,7 +558,6 @@ def start():
     from modules_forge import main_thread
 
     main_thread.loop()
-    return
 
 
 def dump_sysinfo():
@@ -509,3 +572,48 @@ def dump_sysinfo():
         file.write(text)
 
     return filename
+
+
+VERSION_UID: Final[str] = "PY313"
+
+
+def verify_version():
+    """prompt user to do a clean reinstall"""
+    settings_file: os.PathLike = args.ui_settings_file
+
+    if not os.path.isfile(settings_file):
+        # config.json does not exist on a fresh git clone
+        with open(settings_file, "w", encoding="utf8") as file:
+            json.dump({"VERSION_UID": VERSION_UID}, file)
+            return
+
+    with open(settings_file, "r", encoding="utf8") as file:
+        settings: dict[str, Any] = json.load(file)
+
+    if settings.get("VERSION_UID", None) == VERSION_UID:
+        return  # already up-to-date
+
+    os.system("")
+
+    import shutil
+
+    w: int = shutil.get_terminal_size().columns
+    R: Final[str] = "\033[0m"
+    E: Final[str] = "\033[0;31m"
+    Y: Final[str] = "\033[0;33m"
+    B: Final[str] = "\033[0;36m"
+    G: Final[str] = "\033[0;90m"
+    T: Final[str] = " " * 7
+
+    print("\n\n")
+    print("=" * w)
+
+    print(f"{Y}ALERT:{R} You are updating from an old version...")
+    print(f"{T}The recent WebUI updates include breaking changes!")
+    print(f"{T}Please perform a {E}clean reinstall{R}! Remember to {B}back up{R} the models!")
+    print(f"{T}{G}(alternatively, simply remove the config.json and ui-config.json files){R}")
+
+    print("=" * w)
+    print("\n\n")
+
+    input("Press Enter to Continue...")

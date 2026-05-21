@@ -4,6 +4,7 @@
 import torch
 
 from backend import memory_management
+from backend.args import dynamic_args
 from backend.text_processing import emphasis, parsing
 from modules.shared import opts
 
@@ -34,21 +35,17 @@ class QwenTextProcessingEngine:
         llama_texts = [(self.image_template if vision else self.llama_template).format(text) for text in texts]
         return self.tokenizer(llama_texts)["input_ids"]
 
-    def tokenize_line(self, line, images=None):
+    def tokenize_line(self, line: str, images=None):
         parsed = parsing.parse_prompt_attention(line, self.emphasis.name)
-
         tokenized = self.tokenize([text for text, _ in parsed], bool(images))
 
         chunks = []
         chunk = PromptChunk()
-        token_count = 0
 
         def next_chunk():
-            nonlocal token_count
             nonlocal chunk
 
             current_chunk_length = len(chunk.tokens)
-            token_count += current_chunk_length
             remaining_count = self.min_length - current_chunk_length
 
             if self.min_length > 0 and remaining_count > 0:
@@ -59,10 +56,6 @@ class QwenTextProcessingEngine:
             chunk = PromptChunk()
 
         for tokens, (text, weight) in zip(tokenized, parsed):
-            if text == "BREAK" and weight == -1:
-                next_chunk()
-                continue
-
             embed_count = 0
             position = 0
             while position < len(tokens):
@@ -79,34 +72,30 @@ class QwenTextProcessingEngine:
         if chunk.tokens or not chunks:
             next_chunk()
 
-        return chunks, token_count
+        return chunks
 
     def __call__(self, texts, images=None):
+        if images is not None:
+            self.emphasis = emphasis.EmphasisNone()
+        else:
+            self.emphasis = emphasis.get_current_option(opts.emphasis)()
+
+        if any(emphasis.uses_emphasis(x) for x in texts):
+            dynamic_args.last_extra_generation_params["Emphasis"] = self.emphasis.name
+
         zs = []
         cache = {}
-
-        self.emphasis = emphasis.get_current_option(opts.emphasis)()
 
         for line in texts:
             if line in cache:
                 line_z_values = cache[line]
             else:
-                chunks, _ = self.tokenize_line(line, images)
+                chunks = self.tokenize_line(line, images)
                 line_z_values = []
-
-                # pad all chunks to length of longest chunk
-                # max_tokens = 0
-                # for chunk in chunks:
-                #     max_tokens = max(len(chunk.tokens), max_tokens)
 
                 for chunk in chunks:
                     tokens = chunk.tokens
                     multipliers = chunk.multipliers
-
-                    # remaining_count = max_tokens - len(tokens)
-                    # if remaining_count > 0:
-                    #     tokens += [self.id_pad] * remaining_count
-                    #     multipliers += [1.0] * remaining_count
 
                     z = self.process_tokens([tokens], [multipliers])[0]
                     z = self.strip_template(z, tokens)
@@ -115,7 +104,7 @@ class QwenTextProcessingEngine:
 
             zs.extend(line_z_values)
 
-        return torch.stack(zs)
+        return zs
 
     def strip_template(self, out, tokens):
         template_end = 0
@@ -193,5 +182,14 @@ class QwenTextProcessingEngine:
 
     def process_tokens(self, batch_tokens, batch_multipliers):
         embeds, mask, count, info = self.process_embeds(batch_tokens)
+
+        if embeds.size(1) == len(batch_multipliers[0]):
+            # images would cause the length to be different...
+            self.emphasis.tokens = batch_tokens
+            self.emphasis.multipliers = torch.asarray(batch_multipliers).to(embeds)
+            self.emphasis.z = embeds
+            self.emphasis.after_transformers()
+            embeds = self.emphasis.z
+
         z, _ = self.text_encoder(x=None, embeds=embeds, attention_mask=mask, num_tokens=count, embeds_info=info)
         return z

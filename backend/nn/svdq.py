@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
     from transformers import T5EncoderModel
@@ -8,17 +8,22 @@ import types
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 from nunchaku import NunchakuFluxTransformer2dModel, NunchakuT5EncoderModel
 from nunchaku.caching.diffusers_adapters.flux import apply_cache_on_transformer
 from nunchaku.caching.fbcache import cache_context, create_cache_context
 from nunchaku.lora.flux.compose import compose_lora
+from nunchaku.models.embeddings import pack_rotemb
 from nunchaku.models.linear import AWQW4A16Linear, SVDQW4A4Linear
+from nunchaku.models.transformers.utils import patch_scale_key
 from nunchaku.models.utils import CPUOffloadManager
 from nunchaku.ops.fused import fused_gelu_mlp
-from nunchaku.utils import load_state_dict_in_safetensors
+from nunchaku.ops.gemm import svdq_gemm_w4a4_cuda
+from nunchaku.utils import load_state_dict_in_safetensors, pad_tensor
 
 from backend.args import dynamic_args
+from backend.memory_management import logger, soft_empty_cache
 from backend.nn._qwen_lora import compose_loras_v2, reset_lora_v2
 from backend.utils import process_img
 from modules import shared
@@ -31,18 +36,30 @@ class NunchakuModelMixin(nn.Module):
         raise NotImplementedError
 
     def to(self, *args, **kwargs):
-        args = (arg for arg in args if not isinstance(arg, torch.dtype))
-        kwargs.pop("dtype", None)
+        has_dtype: bool = any(isinstance(arg, torch.dtype) for arg in args) or kwargs.get("dtype", None) is not None
+        has_device: bool = any(isinstance(arg, torch.device) for arg in args) or kwargs.get("device", None) is not None
 
-        dev: bool = any(isinstance(arg, torch.device) for arg in args) or "device" in kwargs
+        if not has_device:
+            for arg in args:
+                if isinstance(arg, str):
+                    try:
+                        torch.device(arg)
+                        has_device = True
+                    except RuntimeError:
+                        pass
 
-        if self.offload and dev:
+        if has_dtype:
+            logger.debug("[Nunchaku] Prevent casting dtype...")
+            args = [arg for arg in args if not isinstance(arg, torch.dtype)]
+            kwargs.pop("dtype", None)
+        if self.offload and has_device:
+            logger.debug("[Nunchaku] Prevent moving model...")
             return self
-        else:
-            return super().to(*args, **kwargs)
+
+        return super().to(*args, **kwargs)
 
 
-# ========== Flux ========== #
+# region Flux
 
 
 class SVDQFluxTransformer2DModel(nn.Module):
@@ -84,7 +101,7 @@ class SVDQFluxTransformer2DModel(nn.Module):
         img, img_ids = process_img(x)
         img_tokens = img.shape[1]
 
-        ref_latents = dynamic_args.get("ref_latents", None)
+        ref_latents = dynamic_args.ref_latents or None
 
         if ref_latents is not None:
             h = 0
@@ -190,7 +207,7 @@ class SVDQFluxTransformer2DModel(nn.Module):
         return [], []
 
 
-# ========== T5 ========== #
+# region T5
 
 
 def _forward(self: "T5EncoderModel", input_ids: torch.LongTensor, *args, **kwargs):
@@ -211,7 +228,7 @@ class WrappedEmbedding(nn.Module):
         return self.embedding.weight
 
 
-class SVDQT5(torch.nn.Module):
+class SVDQT5(nn.Module):
     """https://github.com/nunchaku-tech/ComfyUI-nunchaku/blob/v1.0.0/nodes/models/text_encoder.py"""
 
     def __init__(self, path: str):
@@ -222,10 +239,11 @@ class SVDQT5(torch.nn.Module):
         transformer.shared = WrappedEmbedding(transformer.shared)
 
         self.transformer = transformer
-        self.logit_scale = torch.nn.Parameter(torch.tensor(4.6055))
+        self.logit_scale = nn.Parameter(torch.tensor(4.6055))
 
 
-# ========== Qwen ========== #
+# region Qwen
+
 
 from backend.memory_management import xformers_enabled
 
@@ -602,8 +620,7 @@ class NunchakuQwenImageTransformer2DModel(NunchakuModelMixin, QwenImageTransform
         hidden_states, img_ids, orig_shape = self.process_img(x)
         num_embeds = hidden_states.shape[1]
 
-        if dynamic_args.get("ref_latents", None) is not None:
-            ref_latents = dynamic_args["ref_latents"]
+        ref_latents = dynamic_args.ref_latents or None
 
         if ref_latents is not None:
             h = 0
@@ -654,9 +671,9 @@ class NunchakuQwenImageTransformer2DModel(NunchakuModelMixin, QwenImageTransform
             reset_lora_v2(self)
             self.set_offload(False, None, None)
 
-            print("[Qwen] Composing LoRAs...")
+            logger.info(f"[Qwen] Composing {len(self.loras)} LoRA(s)...")
             compose_loras_v2(self, self.loras)
-            print("[Qwen] LoRAs Composed~")
+            logger.info("[Qwen] LoRAs Composed")
 
             self.set_offload(
                 offload=shared.opts.svdq_cpu_offload,
@@ -757,7 +774,7 @@ class NunchakuQwenImageTransformer2DModel(NunchakuModelMixin, QwenImageTransform
         else:
             self.offload_manager = None
             gc.collect()
-            torch.cuda.empty_cache()
+            soft_empty_cache()
 
     def load_state_dict(self, sd, *args, **kwargs):
         state_dict = self.state_dict()
@@ -774,3 +791,280 @@ class NunchakuQwenImageTransformer2DModel(NunchakuModelMixin, QwenImageTransform
                     m.wtscale = sd.pop(f"{n}.wtscale", 1.0)
 
         return super().load_state_dict(sd, *args, **kwargs)
+
+
+# region Z-Image
+
+from functools import wraps
+
+from backend.nn.lumina import JointAttention, NextDiT, clamp_fp16
+
+
+def fuse_to_svdquant_linear(linear1: nn.Linear, linear2: nn.Linear, **kwargs) -> SVDQW4A4Linear:
+    assert linear1.in_features == linear2.in_features
+    assert linear1.bias is None and linear2.bias is None
+    return SVDQW4A4Linear(
+        linear1.in_features,
+        linear1.out_features + linear2.out_features,
+        bias=False,
+        torch_dtype=linear1.weight.dtype,
+        device=linear1.weight.device,
+        **kwargs,
+    )
+
+
+def fused_qkv_norm_rotary(
+    x: torch.Tensor,
+    qkv: SVDQW4A4Linear,
+    q_norm_weight: nn.Parameter,
+    k_norm_weight: nn.Parameter,
+    freqs_cis: torch.Tensor,
+):
+    batch_size, seq_len, channels = x.shape
+    x_dtype = x.dtype
+    x = x.view(batch_size * seq_len, channels)
+    quantized_x, ascales, lora_act = qkv.quantize(x)
+    output = torch.empty(batch_size * seq_len, qkv.out_features, dtype=x.dtype, device=x.device)
+    if (q_norm_weight is not None) and (x_dtype != q_norm_weight.dtype):
+        assert x_dtype == torch.float16
+        assert q_norm_weight.dtype == torch.bfloat16
+        assert k_norm_weight.dtype == torch.bfloat16
+        q_norm_weight = torch.nan_to_num(q_norm_weight.to(dtype=torch.float16), nan=0.0, posinf=65504, neginf=-65504)
+        k_norm_weight = torch.nan_to_num(k_norm_weight.to(dtype=torch.float16), nan=0.0, posinf=65504, neginf=-65504)
+    svdq_gemm_w4a4_cuda(
+        act=quantized_x,
+        wgt=qkv.qweight,
+        out=output,
+        ascales=ascales,
+        wscales=qkv.wscales,
+        lora_act_in=lora_act,
+        lora_up=qkv.proj_up,
+        bias=qkv.bias,
+        fp4=qkv.precision == "nvfp4",
+        alpha=qkv.wtscale,
+        wcscales=qkv.wcscales,
+        norm_q=q_norm_weight if q_norm_weight is not None else None,
+        norm_k=k_norm_weight if k_norm_weight is not None else None,
+        rotary_emb=freqs_cis,
+    )
+    output = output.view(batch_size, seq_len, -1)
+    return output
+
+
+class NunchakuZImageAttention(JointAttention):
+
+    def __init__(self, orig_attn: JointAttention, **kwargs):
+        nn.Module.__init__(self)
+        self.n_kv_heads = orig_attn.n_kv_heads
+        self.n_local_heads = orig_attn.n_local_heads
+        self.n_local_kv_heads = orig_attn.n_local_kv_heads
+        self.n_rep = orig_attn.n_rep
+        self.head_dim = orig_attn.head_dim
+
+        self.qkv = SVDQW4A4Linear.from_linear(orig_attn.qkv, **kwargs)
+        self.out = SVDQW4A4Linear.from_linear(orig_attn.out, **kwargs)
+
+        self.q_norm = orig_attn.q_norm
+        self.k_norm = orig_attn.k_norm
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        x_mask: torch.Tensor,
+        freqs_cis: torch.Tensor,
+        transformer_options={},
+    ) -> torch.Tensor:
+        bsz, seqlen, _ = x.shape
+        qkv = fused_qkv_norm_rotary(
+            x,
+            self.qkv,
+            self.q_norm.weight,
+            self.k_norm.weight,
+            freqs_cis,
+        )
+
+        xq, xk, xv = torch.split(
+            qkv,
+            [
+                self.n_local_heads * self.head_dim,
+                self.n_local_kv_heads * self.head_dim,
+                self.n_local_kv_heads * self.head_dim,
+            ],
+            dim=-1,
+        )
+        xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+        xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
+        xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
+
+        n_rep = self.n_local_heads // self.n_local_kv_heads
+        if n_rep >= 1:
+            xk = xk.unsqueeze(3).repeat(1, 1, 1, n_rep, 1).flatten(2, 3)
+            xv = xv.unsqueeze(3).repeat(1, 1, 1, n_rep, 1).flatten(2, 3)
+        output = attention_function(
+            xq.movedim(1, 2),
+            xk.movedim(1, 2),
+            xv.movedim(1, 2),
+            self.n_local_heads,
+            x_mask,
+            skip_reshape=True,
+            transformer_options=transformer_options,
+        )
+
+        return self.out(output)
+
+
+class NunchakuZImageFeedForward(nn.Module):
+
+    def __init__(self, orig_ff: FeedForward, **kwargs):
+        super().__init__()
+        self.w13 = fuse_to_svdquant_linear(orig_ff.w1, orig_ff.w3, **kwargs)
+        self.w2 = SVDQW4A4Linear.from_linear(orig_ff.w2, **kwargs)
+
+    def _forward_silu_gating(self, x1, x3):
+        return clamp_fp16(F.silu(x1) * x3)
+
+    def forward(self, x: torch.Tensor):
+        x = self.w13(x)
+        x3, x1 = x.chunk(2, dim=-1)
+        return self.w2(self._forward_silu_gating(x1, x3))
+
+
+class RopeFuseAttentionHook:
+
+    def __init__(self):
+        self.packed_freqs_cis_cache = {}
+        self.hook_handles = []
+
+    def pre_forward(self, module: NunchakuZImageAttention, input_args: tuple, input_kwargs: dict):
+        new_input_args = list(input_args)
+        freqs_cis: torch.Tensor = new_input_args[2]
+        if freqs_cis is None:
+            return None
+        cache_key = (freqs_cis.data_ptr(), freqs_cis.shape)
+        packed_freqs_cis = self.packed_freqs_cis_cache.get(cache_key, None)
+        if packed_freqs_cis is None:
+            freqs_cis = freqs_cis[..., [1], :].squeeze(2).float()
+            packed_freqs_cis = pack_rotemb(pad_tensor(freqs_cis, 256, 1))
+            self.packed_freqs_cis_cache[cache_key] = packed_freqs_cis
+        new_input_args[2] = packed_freqs_cis
+        return tuple(new_input_args), input_kwargs
+
+    def hook(self, module: NunchakuZImageAttention):
+        assert isinstance(module, NunchakuZImageAttention)
+        self.hook_handles.append(module.register_forward_pre_hook(self.pre_forward, with_kwargs=True))
+
+    def unhook(self):
+        for h in self.hook_handles:
+            h.remove()
+        self.hook_handles.clear()
+        self.packed_freqs_cis_cache.clear()
+
+
+class RopeFuseTransformerHook:
+
+    def __init__(self, skip_refiners: bool):
+        self.skip_refiners = skip_refiners
+
+    def pre_forward(self, module: NextDiT, input_args: tuple):
+        self.attn_hook = RopeFuseAttentionHook()
+        for _, ly in enumerate(module.layers):
+            self.attn_hook.hook(ly.attention)
+        if not self.skip_refiners:
+            for _, nr in enumerate(module.noise_refiner):
+                self.attn_hook.hook(nr.attention)
+            for _, cr in enumerate(module.context_refiner):
+                self.attn_hook.hook(cr.attention)
+        return None
+
+    def post_forward(self, module: NextDiT, input_args: tuple, output: tuple):
+        self.attn_hook.unhook()
+        return None
+
+    def hook(self, model: NextDiT):
+        assert isinstance(model, NextDiT)
+        self.pre_handle = model.register_forward_pre_hook(self.pre_forward)
+        self.post_handle = model.register_forward_hook(self.post_forward, always_call=True)
+
+
+def patch_z_image_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    patched_state_dict = {}
+    quant_sub_keys = ["wscales", "wcscales", "wtscale", "smooth_factor_orig", "smooth_factor", "proj_down", "proj_up"]
+
+    for key, value in state_dict.items():
+        if "attention.to_qkv" in key:
+            patched_state_dict[key.replace("to_qkv", "qkv")] = value
+        elif "attention.to_q" in key:
+            q_weight = state_dict[key]
+            k_weight = state_dict[key.replace("to_q", "to_k")]
+            v_weight = state_dict[key.replace("to_q", "to_v")]
+            patched_state_dict[key.replace("to_q", "qkv")] = torch.cat([q_weight, k_weight, v_weight], dim=0)
+        elif "attention.to_k" in key or "attention.to_v" in key:
+            continue
+        elif "attention.to_out" in key:
+            patched_state_dict[key.replace("to_out.0", "out")] = value
+        elif "feed_forward.net.0.proj.qweight" in key:
+            patched_state_dict[key.replace("net.0.proj", "w13")] = value
+            for subkey in quant_sub_keys:
+                quant_param_key = key.replace("qweight", subkey)
+                if quant_param_key in state_dict:
+                    patched_state_dict[quant_param_key.replace("net.0.proj", "w13")] = state_dict[quant_param_key]
+        elif any("feed_forward.net.0.proj." + subkey in key for subkey in quant_sub_keys):
+            continue
+        elif "feed_forward.net.2.qweight" in key:
+            patched_state_dict[key.replace("net.2", "w2")] = value
+            for subkey in quant_sub_keys:
+                quant_param_key = key.replace("qweight", subkey)
+                if quant_param_key in state_dict:
+                    patched_state_dict[quant_param_key.replace("net.2", "w2")] = state_dict[quant_param_key]
+        elif any("feed_forward.net.2." + subkey in key for subkey in quant_sub_keys):
+            continue
+        elif "feed_forward.net.0.proj.weight" in key:
+            w3, w1 = torch.chunk(value, chunks=2, dim=0)
+            w2 = state_dict[key.replace("0.proj", "2")]
+            patched_state_dict[key.replace("net.0.proj", "w1")] = w1
+            patched_state_dict[key.replace("net.0.proj", "w2")] = w2
+            patched_state_dict[key.replace("net.0.proj", "w3")] = w3
+        elif "feed_forward.net.2.weight" in key:
+            continue
+        elif "attention.norm_q" in key:
+            patched_state_dict[key.replace("norm_q", "q_norm")] = value
+        elif "attention.norm_k" in key:
+            patched_state_dict[key.replace("norm_k", "k_norm")] = value
+        elif "all_final_layer.2-1" in key:
+            patched_state_dict[key.replace("all_final_layer.2-1", "final_layer")] = value
+        elif "all_x_embedder.2-1" in key:
+            patched_state_dict[key.replace("all_x_embedder.2-1", "x_embedder")] = value
+        else:
+            patched_state_dict[key] = value
+
+    return patched_state_dict
+
+
+def patch_nunchaku_zimage(model: NextDiT, precision: str, rank: int):
+    kwargs = {"precision": precision, "rank": rank}
+
+    def patch_transformer_block(block_list: list[nn.Module]):
+        for _, block in enumerate(block_list):
+            block.attention = NunchakuZImageAttention(block.attention, **kwargs)
+            block.feed_forward = NunchakuZImageFeedForward(block.feed_forward, **kwargs)
+
+    patch_transformer_block(model.layers)
+    patch_transformer_block(model.noise_refiner)
+    patch_transformer_block(model.context_refiner)
+    RopeFuseTransformerHook(False).hook(model)
+
+    _load_state_dict: Callable = model.load_state_dict
+
+    @wraps(_load_state_dict)
+    def load_state_dict(sd, *args, **kwargs):
+        sd = patch_z_image_state_dict(sd)
+        patch_scale_key(model, sd)
+        return _load_state_dict(sd, *args, **kwargs)
+
+    class NunchakuZImage2DModel(NunchakuModelMixin, NextDiT):
+        pass
+
+    model.load_state_dict = load_state_dict
+    model.__class__ = NunchakuZImage2DModel
+
+    return model

@@ -321,6 +321,8 @@ function setupResolutionPasting(tabname) {
 function restoreStyleDeselection(tabname) {
     const dropdown = document.getElementById(`${tabname}_styles`);
     dropdown.addEventListener("click", (e) => {
+        const remove = e.target.closest("div.token-remove");
+        if (remove) return;
         const style = e.target.closest("div.token");
         if (style) {
             style.querySelector("div.token-remove").click();
@@ -455,23 +457,21 @@ function updateInput(target) {
     target.dispatchEvent(e);
 }
 
-let desiredCheckpointName = null;
 function selectCheckpoint(name) {
-    desiredCheckpointName = name;
+    const input = gradioApp().getElementById("change_checkpoint_text").querySelector("textarea");
+    input.value = name;
+    updateInput(input);
     gradioApp().getElementById("change_checkpoint").click();
-}
-let desiredVAEName = 0;
-function selectVAE(vae) {
-    desiredVAEName = vae;
 }
 
 function currentImg2imgSourceResolution(w, h, r) {
     let img = gradioApp().querySelector(
         '#mode_img2img > div[style="display: block;"] :is(img, canvas)',
     );
-    return img
-        ? [img.naturalWidth || img.width, img.naturalHeight || img.height, r]
-        : [0, 0, r];
+    if (!img) return [0, 0, r];
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
+    return [Math.round(width / 64.0) * 64, Math.round(height / 64.0) * 64, r];
 }
 
 function updateImg2imgResizeToTextAfterChangingImage() {

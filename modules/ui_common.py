@@ -283,7 +283,7 @@ def create_output_panel(tabname, outdir, toprow=None):
                     parameters_copypaste.ParamBinding(
                         paste_button=paste_button,
                         tabname=paste_tabname,
-                        source_tabname="txt2img" if tabname == "txt2img" else None,
+                        source_tabname=tabname if (tabname == "txt2img" or (tabname == "img2img" and shared.opts.allow_i2i_send_info)) else None,
                         source_image_component=res.gallery,
                         paste_field_names=paste_field_names,
                     )
@@ -317,7 +317,7 @@ def create_refresh_button(refresh_component, refresh_method, refreshed_args, ele
 
 
 def setup_dialog(button_show, dialog, *, button_close=None):
-    """Sets up the UI so that the dialog (gr.Box) is invisible, and is only shown when buttons_show is clicked, in a fullscreen modal window."""
+    """Sets up the UI so that the dialog (gr.Group) is invisible, and is only shown when buttons_show is clicked, in a fullscreen modal window."""
 
     dialog.visible = False
 

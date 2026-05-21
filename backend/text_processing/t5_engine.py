@@ -1,6 +1,7 @@
 import torch
 
 from backend import memory_management
+from backend.args import dynamic_args
 from backend.text_processing import emphasis, parsing
 from modules.shared import opts
 
@@ -30,13 +31,7 @@ class T5TextProcessingEngine:
     def encode_with_transformers(self, tokens):
         device = memory_management.text_encoder_device()
         tokens = tokens.to(device)
-        self.text_encoder.shared.to(device=device, dtype=torch.float32)
-
-        z = self.text_encoder(
-            input_ids=tokens,
-        )
-
-        return z
+        return self.text_encoder(input_ids=tokens)
 
     def tokenize_line(self, line):
         parsed = parsing.parse_prompt_attention(line, self.emphasis.name)
@@ -88,10 +83,12 @@ class T5TextProcessingEngine:
         return chunks, token_count
 
     def __call__(self, texts):
+        self.emphasis = emphasis.get_current_option(opts.emphasis)()
+        if any(emphasis.uses_emphasis(x) for x in texts):
+            dynamic_args.last_extra_generation_params["Emphasis"] = self.emphasis.name
+
         zs = []
         cache = {}
-
-        self.emphasis = emphasis.get_current_option(opts.emphasis)()
 
         for line in texts:
             if line in cache:

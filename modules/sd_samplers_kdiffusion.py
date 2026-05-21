@@ -14,17 +14,18 @@ from modules.shared import opts
 samplers_k_diffusion = [
     ("DPM++ 2M", "sample_dpmpp_2m", ["k_dpmpp_2m"], {"scheduler": "karras"}),
     ("DPM++ SDE", "sample_dpmpp_sde", ["k_dpmpp_sde"], {"scheduler": "karras", "second_order": True, "brownian_noise": True}),
-    ("DPM++ 2M SDE", "sample_dpmpp_2m_sde", ["k_dpmpp_2m_sde_ka"], {"brownian_noise": True}),
+    ("DPM++ 2M SDE", "sample_dpmpp_2m_sde", ["k_dpmpp_2m_sde"], {"scheduler": "exponential", "brownian_noise": True}),
     ("DPM++ 3M SDE", "sample_dpmpp_3m_sde", ["k_dpmpp_3m_sde"], {"scheduler": "exponential", "discard_next_to_last_sigma": True, "brownian_noise": True}),
     ("Flux Realistic" if opts.forbidden_knowledge else "DPM++ 2s a RF", "sample_dpmpp_2s_ancestral_RF", ["sample_dpmpp_2s_ancestral_RF"], {}),
     ("Euler a", "sample_euler_ancestral", ["k_euler_a", "k_euler_ancestral"], {"uses_ensd": True}),
     ("Euler", "sample_euler", ["k_euler"], {}),
+    ("ER SDE", "sample_er_sde", ["er_sde"], {}),
     ("LCM", "sample_lcm", ["k_lcm"], {}),
     ("LMS", "sample_lms", ["k_lms"], {}),
     ("Heun", "sample_heun", ["k_heun"], {"second_order": True}),
     ("DPM2", "sample_dpm_2", ["k_dpm_2"], {"scheduler": "karras", "discard_next_to_last_sigma": True, "second_order": True}),
-    ("Res Multistep", "res_multistep", ["res_multistep"], {}),
-    ("Kohaku LoNyu Yog", "sample_Kohaku_LoNyu_Yog", ["sample_Kohaku_LoNyu_Yog"], {}),
+    ("Res Multistep", "sample_res_multistep", ["res_multistep"], {}),
+    ("Kohaku LoNyu Yog", "sample_Kohaku_LoNyu_Yog", ["Kohaku_LoNyu_Yog"], {}),
     ("Restart", sd_samplers_extra.restart_sampler, ["restart"], {"scheduler": "karras", "second_order": True}),
     ("UniPC", sd_samplers_extra.sample_unipc, ["unipc"], {"discard_next_to_last_sigma": True}),
 ]
@@ -78,19 +79,26 @@ class KDiffusionSampler(sd_samplers_common.Sampler):
 
         scheduler_name = (p.hr_scheduler if p.is_hr_pass else p.scheduler) or "Automatic"
         if scheduler_name == "Automatic":
-            scheduler_name = self.config.options.get("scheduler", None)
+            from backend.args import dynamic_args
+
+            if dynamic_args.klein:
+                scheduler_name = "Flux2"
+            else:
+                scheduler_name = self.config.options.get("scheduler", None)
+
+            if scheduler_name is None and not p.sd_model.is_webui_legacy_model():
+                scheduler_name = "Normal"
 
         scheduler = sd_schedulers.schedulers_map.get(scheduler_name)
 
         m_sigma_min, m_sigma_max = self.model_wrap.sigmas[0].item(), self.model_wrap.sigmas[-1].item()
-        sigma_min, sigma_max = (0.1, 10) if opts.use_old_karras_scheduler_sigmas else (m_sigma_min, m_sigma_max)
 
         if p.sampler_noise_scheduler_override:
             sigmas = p.sampler_noise_scheduler_override(steps)
         elif scheduler is None or scheduler.function is None:
             sigmas = self.model_wrap.get_sigmas(steps)
         else:
-            sigmas_kwargs = {"sigma_min": sigma_min, "sigma_max": sigma_max}
+            sigmas_kwargs = {"sigma_min": m_sigma_min, "sigma_max": m_sigma_max}
 
             if scheduler.label != "Automatic" and not p.is_hr_pass:
                 p.extra_generation_params["Schedule type"] = scheduler.label
@@ -114,6 +122,14 @@ class KDiffusionSampler(sd_samplers_common.Sampler):
             if scheduler.label == "Beta":
                 p.extra_generation_params["Beta schedule alpha"] = opts.beta_dist_alpha
                 p.extra_generation_params["Beta schedule beta"] = opts.beta_dist_beta
+
+            if scheduler.label == "Flux2":
+                if p.is_hr_pass:
+                    sigmas_kwargs["width"] = p.hr_upscale_to_x
+                    sigmas_kwargs["height"] = p.hr_upscale_to_y
+                else:
+                    sigmas_kwargs["width"] = p.width
+                    sigmas_kwargs["height"] = p.height
 
             sigmas = scheduler.function(n=steps, **sigmas_kwargs, device=devices.cpu)
 
@@ -176,6 +192,8 @@ class KDiffusionSampler(sd_samplers_common.Sampler):
             "s_min_uncond": self.s_min_uncond,
         }
 
+        p.sd_model.forge_objects.unet.model_options["transformer_options"]["sampling_sigmas"] = sigmas
+
         samples = self.launch_sampling(
             t_enc + 1,
             lambda: self.func(self.model_wrap_cfg, xi, extra_args=self.sampler_extra_args, disable=False, callback=self.callback_state, **extra_params_kwargs),
@@ -229,6 +247,8 @@ class KDiffusionSampler(sd_samplers_common.Sampler):
             "cond_scale": p.cfg_scale,
             "s_min_uncond": self.s_min_uncond,
         }
+
+        p.sd_model.forge_objects.unet.model_options["transformer_options"]["sampling_sigmas"] = sigmas
 
         samples = self.launch_sampling(
             steps,

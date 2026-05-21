@@ -15,26 +15,25 @@ class Chroma(ForgeDiffusionEngine):
 
     def __init__(self, estimated_config, huggingface_components):
         super().__init__(estimated_config, huggingface_components)
-        self.is_inpaint = False
 
         clip = CLIP(model_dict={"t5xxl": huggingface_components["text_encoder"]}, tokenizer_dict={"t5xxl": huggingface_components["tokenizer"]})
 
         vae = VAE(model=huggingface_components["vae"])
+
         k_predictor = PredictionFlux(mu=1.0)
+
         unet = UnetPatcher.from_model(model=huggingface_components["transformer"], diffusers_scheduler=None, k_predictor=k_predictor, config=estimated_config)
 
         self.text_processing_engine_t5 = T5TextProcessingEngine(
             text_encoder=clip.cond_stage_model.t5xxl,
             tokenizer=clip.tokenizer.t5xxl,
-            min_length=-1,
-            min_padding=1,
+            min_length=1,
+            min_padding=0,
         )
 
         self.forge_objects = ForgeObjects(unet=unet, clip=clip, vae=vae, clipvision=None)
         self.forge_objects_original = self.forge_objects.shallow_copy()
         self.forge_objects_after_applying_lora = self.forge_objects.shallow_copy()
-
-        self.is_flux = True
 
     @torch.inference_mode()
     def get_learned_conditioning(self, prompt: list[str]):

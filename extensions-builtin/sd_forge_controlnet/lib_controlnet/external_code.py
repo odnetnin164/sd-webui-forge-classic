@@ -171,7 +171,9 @@ class ControlNetUnit:
     guidance_end: float = 1.0
     pixel_perfect: bool = False
     control_mode: ControlMode | int | str = ControlMode.BALANCED
+    type_filter: str = "All"
     save_detected_map: bool = True
+    _idx: int = -1
 
     @staticmethod
     def infotext_fields():
