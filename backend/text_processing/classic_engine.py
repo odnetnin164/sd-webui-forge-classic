@@ -76,6 +76,8 @@ class ClassicTextProcessingEngine:
         self.id_end = self.tokenizer.eos_token_id
         self.id_pad = self.tokenizer.pad_token_id
 
+        self.emphasis = emphasis.get_current_option(getattr(opts, 'emphasis', 'Original'))()
+
         model_embeddings = text_encoder.transformer.text_model.embeddings
         model_embeddings.token_embedding = CLIPEmbeddingForTextualInversion(model_embeddings.token_embedding, self.embeddings, textual_inversion_key=embedding_key)
 

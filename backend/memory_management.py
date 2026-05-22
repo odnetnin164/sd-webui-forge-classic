@@ -501,40 +501,19 @@ class LoadedModel:
     def model_use_more_vram(self, extra_memory, force_patch_weights=False):
         return self.model.partially_load(self.device, extra_memory, force_patch_weights=force_patch_weights)
 
-            self.model_accelerated = True
-
-            global signal_empty_cache
-            signal_empty_cache = True
-
-        bake_gguf_model(self.real_model)
-
-        self.model.refresh_loras()
-
-        if is_intel_xpu() and not args.disable_ipex_hijack:
-            self.real_model = torch.xpu.optimize(self.real_model.eval(), inplace=True, auto_kernel_selection=True, graph_mode=True)
-
-        return self.real_model
-
-    def model_unload(self, avoid_model_moving=False):
-        if self.model_accelerated:
-            for m in self.real_model.modules():
-                if hasattr(m, "prev_parameters_manual_cast"):
-                    m.parameters_manual_cast = m.prev_parameters_manual_cast
-                    del m.prev_parameters_manual_cast
-
-            self.model_accelerated = False
-
-        if avoid_model_moving:
-            self.model.forge_unpatch_model()
-        else:
-            self.model.forge_unpatch_model(self.model.offload_device)
-            self.model.model_patches_to(self.model.offload_device)
+    def _patch_keys(self, patcher):
+        keys = set()
+        if hasattr(patcher, 'patches'):
+            keys.update(patcher.patches.keys())
+        if hasattr(patcher, 'online_patches'):
+            keys.update(patcher.online_patches.keys())
+        return keys
 
     def __eq__(self, other: "LoadedModel"):
         # IMPORTANT: Check LoRAs first, even for same patcher object!
         # LoRAs can be modified in-place on the same patcher, so we must check them
-        self_lora_keys = set(self.model.lora_patches.keys()) if hasattr(self.model, 'lora_patches') else set()
-        other_lora_keys = set(other.model.lora_patches.keys()) if hasattr(other.model, 'lora_patches') else set()
+        self_lora_keys = self._patch_keys(self.model)
+        other_lora_keys = self._patch_keys(other.model)
 
         # If same patcher object with same LoRAs, it's equal
         if self.model is other.model:
@@ -583,21 +562,7 @@ def unload_model_clones(model):
         soft_empty_cache()
 
 
-def free_memory(memory_required, device, keep_loaded=[], free_all=False):
-    initial_free = get_free_memory(device)
-    if free_all:
-        memory_required = 1e30
-        print(f"[Unload] Freeing all memory on {device} (keeping {len(keep_loaded)} models, currently {initial_free / (1024 * 1024):.0f} MB free) ... ", end="")
-        offload_everything = True
-    else:
-        print(f"[Unload] Need {memory_required / (1024 * 1024):.0f} MB on {device} (keeping {len(keep_loaded)} models, currently {initial_free / (1024 * 1024):.0f} MB free) ... ", end="")
-        offload_everything = ALWAYS_VRAM_OFFLOAD or vram_state is VRAMState.NO_VRAM
 
-    unloaded_model = False
-    for i in range(len(current_loaded_models) - 1, -1, -1):
-        if not offload_everything:
-            if get_free_memory(device) > memory_required:
-                break
 
 
 def offloaded_memory(loaded_models, device):
@@ -689,6 +654,8 @@ def free_memory(memory_required: float, device: torch.device, keep_loaded: list[
             current_free = get_free_memory(device)
             print(f"No action needed. {current_free / (1024 * 1024):.0f} MB available.")
 
+    return unloaded_models
+
 
 def compute_memory_for_cpu_swap(current_free_mem, inference_memory, previously_loaded):
     maximum_memory_available = current_free_mem + previously_loaded - inference_memory
@@ -696,9 +663,10 @@ def compute_memory_for_cpu_swap(current_free_mem, inference_memory, previously_l
     return int(max(0, suggestion - previously_loaded))
 
 
-def load_models_gpu(models, memory_required=0, hard_memory_preservation=0, timer=None):
+def load_models_gpu(models, memory_required=0, hard_memory_preservation=0, timer=None, force_full_load=False, force_patch_weights=False):
     global vram_state
 
+    minimum_memory_required = None
     execution_start_time = time.perf_counter()
     cleanup_models_gc(target=models)
 
@@ -736,10 +704,18 @@ def load_models_gpu(models, memory_required=0, hard_memory_preservation=0, timer
             for i, existing in enumerate(current_loaded_models):
                 if hasattr(x, 'is_clone') and x.is_clone(existing.model):
                     # Same underlying model, but check LoRAs
-                    new_lora_keys = set(x.lora_patches.keys()) if hasattr(x, 'lora_patches') else set()
-                    existing_lora_keys = set(existing.model.lora_patches.keys()) if hasattr(existing.model, 'lora_patches') else set()
+                    new_patch_keys = set()
+                    if hasattr(x, 'patches'):
+                        new_patch_keys.update(x.patches.keys())
+                    if hasattr(x, 'online_patches'):
+                        new_patch_keys.update(x.online_patches.keys())
+                    existing_patch_keys = set()
+                    if hasattr(existing.model, 'patches'):
+                        existing_patch_keys.update(existing.model.patches.keys())
+                    if hasattr(existing.model, 'online_patches'):
+                        existing_patch_keys.update(existing.model.online_patches.keys())
 
-                    if new_lora_keys == existing_lora_keys:
+                    if new_patch_keys == existing_patch_keys:
                         # Same model with same LoRAs - can reuse
                         print(f"[Memory] DEBUG: Found clone of {existing.model.model.__class__.__name__} with matching LoRAs, reusing")
                         loaded_model = current_loaded_models.pop(i)
@@ -749,10 +725,10 @@ def load_models_gpu(models, memory_required=0, hard_memory_preservation=0, timer
                         break
                     else:
                         # Same model but different LoRAs - need to reload
-                        print(f"[Memory] DEBUG: Found clone of {existing.model.model.__class__.__name__} but LoRAs differ ({len(new_lora_keys)} vs {len(existing_lora_keys)}), will reload")
+                        print(f"[Memory] DEBUG: Found clone of {existing.model.model.__class__.__name__} but LoRAs differ ({len(new_patch_keys)} vs {len(existing_patch_keys)}), will reload")
 
             if not found_clone:
-                models_to_load.append(load_model)
+                models_to_load.append(loaded_model)
 
     if len(models_to_load) == 0:
         # All requested models are already loaded
@@ -832,7 +808,7 @@ def load_models_gpu(models, memory_required=0, hard_memory_preservation=0, timer
             if lowvram_model_memory == 0:
                 lowvram_model_memory = 0.1
 
-            print(f"[Memory] Loading {loaded_model.model.model.__class__.__name__} ({model_require / (1024 * 1024):.0f} MB required, {current_free_mem / (1024 * 1024):.0f} MB free)", end="")
+            print(f"[Memory] Loading {loaded_model.model.model.__class__.__name__} ({loaded_model.model_memory_required(torch_dev) / (1024 * 1024):.0f} MB required, {current_free_mem / (1024 * 1024):.0f} MB free)", end="")
 
         if vram_set_state is VRAMState.NO_VRAM:
             lowvram_model_memory = 0.1

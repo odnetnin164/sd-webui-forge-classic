@@ -38,3 +38,4 @@ torchsde==0.2.6
 tqdm==4.67.3
 transformers==4.56.2
 torch
+imageio-ffmpeg

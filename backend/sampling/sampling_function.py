@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 import torch
 
 from backend import memory_management, utils
-from backend.args import args
+from backend.args import args, dynamic_args
 from backend.sampling.condition import (
     Condition,
     compile_conditions,

@@ -79,6 +79,11 @@ def manual_seed(seed):
     torch.manual_seed(seed)
 
 
+def get_noise_source_type():
+    """Get the current noise source type: CPU, GPU, or NV"""
+    return shared.opts.randn_source
+
+
 def create_generator(seed):
     if shared.opts.randn_source == "NV":
         return rng_philox.Generator(seed)
